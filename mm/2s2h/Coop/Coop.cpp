@@ -9,6 +9,7 @@
 #include <ship/window/Window.h>
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopEnemies.h"
 #include "CoopPlayerSync.h"
 #include "CoopPuppet.h"
 #include "CoopSession.h"
@@ -92,6 +93,7 @@ void OnFrame() {
     Clock::Frame();
     PlayerSync::Frame();
     Puppet::Frame();
+    Enemies::Frame();
     Test::Frame();
     CheckQuitAfter();
 }

@@ -7,6 +7,7 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopEnemies.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -44,6 +45,11 @@ int sBlockSongsStep = 0;
 size_t sNextClientExit = 0;
 size_t sNextForm = 0;
 size_t sNextPos = 0;
+size_t sNextSpawn = 0;
+int sLastSpawnSecond = -1;
+int sSpawnIndex = 0;
+size_t sNextKill = 0;
+bool sFuzzDone = false;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -304,6 +310,29 @@ void UpdateLocalChanges() {
     }
 }
 
+// --coop-test-spawn / --coop-test-kill (host) and --coop-test-fuzz-enemies (both).
+void UpdateEnemyTests() {
+    const LaunchOptions& options = GetLaunchOptions();
+    const int seconds = GameplaySeconds();
+    if (IsHosting() && NoTransitionInProgress()) {
+        while (sNextSpawn < options.testSpawn.size() && seconds >= options.testSpawn[sNextSpawn].atSeconds) {
+            const LaunchOptions::TimedSpawn& spawn = options.testSpawn[sNextSpawn++];
+            // Several spawns at the same second go around Link instead of on top of each other.
+            sSpawnIndex = spawn.atSeconds == sLastSpawnSecond ? sSpawnIndex + 1 : 0;
+            sLastSpawnSecond = spawn.atSeconds;
+            Enemies::TestSpawn(static_cast<int16_t>(spawn.actorId), static_cast<uint16_t>(spawn.params), sSpawnIndex);
+        }
+        while (sNextKill < options.testKill.size() && seconds >= options.testKill[sNextKill].atSeconds) {
+            Enemies::TestKill(options.testKill[sNextKill++].value);
+        }
+    }
+    const std::optional<int>& fuzzAt = options.testFuzzEnemiesAt;
+    if (fuzzAt.has_value() && !sFuzzDone && seconds >= *fuzzAt && (IsHosting() || IsClientPlayingInSession())) {
+        sFuzzDone = true;
+        Enemies::TestFuzz();
+    }
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
@@ -327,6 +356,11 @@ void Frame() {
         UpdateForceSave();
     }
     UpdateLocalChanges();
+    UpdateEnemyTests();
+    // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
+    if (GetLaunchOptions().testKeepHealth) {
+        gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;
+    }
 }
 
 static RegisterShipInitFunc initFunc(RegisterTestHooks);
