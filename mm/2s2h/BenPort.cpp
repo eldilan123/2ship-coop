@@ -115,6 +115,7 @@ CrowdControl* CrowdControl::Instance;
 #include <ship/window/gui/resource/FontFactory.h>
 #include "2s2h/Enhancements/Audio/AudioCollection.h"
 #include "BenGui/BenInputEditorWindow.h"
+#include "2s2h/Coop/Coop.h"
 
 OTRGlobals* OTRGlobals::Instance;
 GameInteractor* GameInteractor::Instance;
@@ -1027,6 +1028,8 @@ extern "C" void DeinitOTR() {
     CrowdControl::Instance->Disable();
     CrowdControl::Instance->Shutdown();
 #endif
+    // Close coop sockets and join its network thread while the logger is still alive.
+    Coop::Shutdown();
 
     // Destroying gui here because we have shared ptrs to LUS objects which output to SPDLOG which is destroyed before
     // these shared ptrs.
