@@ -1,6 +1,7 @@
 #ifndef COOP_SESSION_H
 #define COOP_SESSION_H
 
+#include <cstdint>
 #include <string>
 
 // Game-side coop session: the client playing on the host's world. Game thread only.
@@ -16,6 +17,9 @@ bool IsClientInSession();
 bool IsWaitingToEnter();
 // One line for the Coop window describing the client's session state.
 std::string SessionStatusText();
+
+// Host: sends a snapshot (Snapshot::Reason) of the current state to every client.
+void HostBroadcastSnapshot(uint16_t reason);
 
 // Called once per frame from the coop frame hook.
 void SessionFrame();

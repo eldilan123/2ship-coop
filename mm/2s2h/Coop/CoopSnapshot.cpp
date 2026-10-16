@@ -150,6 +150,13 @@ bool Parse(const std::vector<uint8_t>& bytes, Parsed& out, std::string& error) {
 
 void ApplyShared(const Parsed& snapshot, bool firstTime) {
     const PerPlayer mine = CapturePerPlayer();
+    // Once in the session the clock channel owns these: a time jump is applied after its snapshot (with the day
+    // change side effects), so the snapshot must not move the clock first.
+    const u16 time = gSaveContext.save.time;
+    const s32 day = gSaveContext.save.day;
+    const s32 eventDayCount = gSaveContext.save.eventDayCount;
+    const s32 isNight = gSaveContext.save.isNight;
+    const s32 timeSpeedOffset = gSaveContext.save.timeSpeedOffset;
 
     std::memcpy(&gSaveContext.save, snapshot.save, sizeof(gSaveContext.save));
     std::memcpy(gSaveContext.cycleSceneFlags, snapshot.cycleSceneFlags, sizeof(gSaveContext.cycleSceneFlags));
@@ -162,6 +169,11 @@ void ApplyShared(const Parsed& snapshot, bool firstTime) {
 
     if (!firstTime) {
         RestorePerPlayer(mine);
+        gSaveContext.save.time = time;
+        gSaveContext.save.day = day;
+        gSaveContext.save.eventDayCount = eventDayCount;
+        gSaveContext.save.isNight = isNight;
+        gSaveContext.save.timeSpeedOffset = timeSpeedOffset;
     }
 }
 

@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
+#include "CoopClock.h"
 #include "CoopSaveGuard.h"
 #include "CoopSnapshot.h"
 #include "2s2h/BenGui/Notification.h"
@@ -283,12 +284,19 @@ void RegisterSessionHooks() {
 
 } // namespace
 
+void HostBroadcastSnapshot(uint16_t reason) {
+    if (IsHosting() && InGameplay()) {
+        HostSendSnapshot(static_cast<Snapshot::Reason>(reason), kBroadcast);
+    }
+}
+
 void RequestEnterSession() {
     if (sStage != ClientStage::None || !IsConnectedClient()) {
         return;
     }
     sStage = ClientStage::Requested;
     sLastSnapshotSeq = 0;
+    Clock::Reset();
     sPending = {};
     SendJson(kHostPlayerId, { { "type", "enter_request" } });
     SPDLOG_INFO("[Coop] Asked the host to enter the session");

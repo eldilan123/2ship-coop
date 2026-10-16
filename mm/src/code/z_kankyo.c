@@ -25,6 +25,7 @@ typedef struct {
 #include "global.h"
 #include "sys_cfb.h"
 #include "BenPort.h"
+#include "2s2h/GameInteractor/GameInteractor.h"
 #include "objects/gameplay_keep/gameplay_keep.h"
 #include "objects/gameplay_field_keep/gameplay_field_keep.h"
 
@@ -1229,9 +1230,13 @@ void Environment_UpdateTime(PlayState* play, EnvironmentContext* envCtx, PauseCo
                 ((play->transitionMode == TRANS_MODE_OFF) || (gSaveContext.gameMode != GAMEMODE_NORMAL))) {
                 if (play->transitionTrigger == TRANS_TRIGGER_OFF) {
                     if ((CutsceneManager_GetCurrentCsId() == CS_ID_NONE) && !Play_InCsMode(play)) {
-                        gSaveContext.save.time = CURRENT_TIME + (u16)R_TIME_SPEED;
-                        if (R_TIME_SPEED != 0) {
-                            gSaveContext.save.time = CURRENT_TIME + (u16)((void)0, gSaveContext.save.timeSpeedOffset);
+                        // 2S2H [Coop] A coop client takes its time from the host instead of ticking it here.
+                        if (GameInteractor_Should(VB_ADVANCE_TIME, true)) {
+                            gSaveContext.save.time = CURRENT_TIME + (u16)R_TIME_SPEED;
+                            if (R_TIME_SPEED != 0) {
+                                gSaveContext.save.time =
+                                    CURRENT_TIME + (u16)((void)0, gSaveContext.save.timeSpeedOffset);
+                            }
                         }
                     }
                 }

@@ -17,6 +17,15 @@ typedef enum {
 
     // #### `result`
     // ```c
+    // true
+    // ```
+    // #### `args`
+    // - None
+    // Per-frame clock tick in Environment_UpdateTime (only reached when time is allowed to run this frame)
+    VB_ADVANCE_TIME,
+
+    // #### `result`
+    // ```c
     // GET_CUR_UPG_VALUE(UPG_BOMB_BAG) == 3
     // ```
     // #### `args`

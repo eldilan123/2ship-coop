@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
+#include "CoopClock.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -23,13 +24,14 @@ namespace Coop::Test {
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
+using SteadyClock = std::chrono::steady_clock;
 
 bool sBootHandled = false;
 bool sAutoloadDone = false;
 int sFileSelectFrames = 0;
-std::optional<Clock::time_point> sGameplayStart; // First time the host reached gameplay
+std::optional<SteadyClock::time_point> sGameplayStart; // First time the host reached gameplay
 size_t sNextGoto = 0;
+size_t sNextTimeJump = 0;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -39,7 +41,8 @@ int GameplaySeconds() {
     if (!sGameplayStart.has_value()) {
         return -1;
     }
-    return static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - *sGameplayStart).count());
+    return static_cast<int>(
+        std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - *sGameplayStart).count());
 }
 
 bool NoTransitionInProgress() {
@@ -128,6 +131,20 @@ void UpdateGoto() {
     gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK;
 }
 
+// --coop-test-timejump: moves the host clock; CoopClock notices the jump and sends it to the clients.
+void UpdateTimeJump() {
+    const auto& jumps = GetLaunchOptions().testTimeJump;
+    if (sNextTimeJump >= jumps.size() || GameplaySeconds() < jumps[sNextTimeJump].atSeconds ||
+        !NoTransitionInProgress()) {
+        return;
+    }
+    const int minutes = jumps[sNextTimeJump].value;
+    sNextTimeJump++;
+    const uint16_t newTime = static_cast<uint16_t>(CURRENT_TIME + minutes * 0x10000 / 1440);
+    SPDLOG_INFO("[Coop] TEST: host time jump of {} minutes", minutes);
+    Clock::JumpTo(newTime, gSaveContext.save.day);
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
 }
@@ -140,10 +157,11 @@ void Frame() {
         return;
     }
     if (!sGameplayStart.has_value()) {
-        sGameplayStart = Clock::now();
+        sGameplayStart = SteadyClock::now();
     }
     if (IsHosting()) {
         UpdateGoto();
+        UpdateTimeJump();
     }
 }
 
