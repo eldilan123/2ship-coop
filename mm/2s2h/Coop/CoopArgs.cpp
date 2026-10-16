@@ -148,6 +148,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testClockLog = true;
         } else if (arg == "--coop-test-host-refuse-exits") {
             options.testHostRefuseExits = true;
+        } else if (arg == "--coop-test-puppet-log") {
+            options.testPuppetLog = true;
         } else if (arg == "--coop-test-debug-save") {
             const char* value = takeValue();
             uint16_t entrance = 0;

@@ -10,6 +10,7 @@
 #include "CoopArgs.h"
 #include "CoopClock.h"
 #include "CoopPlayerSync.h"
+#include "CoopPuppet.h"
 #include "CoopSession.h"
 #include "CoopTest.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -90,6 +91,7 @@ void OnFrame() {
     SessionFrame();
     Clock::Frame();
     PlayerSync::Frame();
+    Puppet::Frame();
     Test::Frame();
     CheckQuitAfter();
 }

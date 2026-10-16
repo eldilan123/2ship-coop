@@ -23,6 +23,7 @@ struct LaunchOptions {
     bool testEnter = false;           // Client: press "Enter session" automatically once connected
     bool testClockLog = false;        // Both: log a clock sample every second while in gameplay
     bool testHostRefuseExits = false; // Host: refuse every scene_request (tests the client timeout)
+    bool testPuppetLog = false;       // Both: log the local Link and every puppet once per second
     // Host: boot straight into gameplay on the game's debug save (in memory) at this entrance
     std::optional<uint16_t> testDebugSaveEntrance;
     // Host: boot to file select and load this slot (1-3) through the same route as choosing it
