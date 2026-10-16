@@ -11,9 +11,8 @@
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
-extern "C" {
-#include "build.h"
-}
+// Generated on every build by CoopBuildId.cmake: git commit + hash of uncommitted changes + build config.
+extern "C" const char gCoopBuildId[];
 
 namespace Coop {
 
@@ -39,6 +38,7 @@ bool StartSession(SessionConfig config) {
     }
     config.name = Protocol::SanitizeName(config.name);
     config.buildVersion = BuildVersion();
+    config.protocolVersion = ProtocolVersion();
     config.silenceAfterSeconds = GetLaunchOptions().silenceAfterSeconds;
     return Net().Start(config);
 }
@@ -94,6 +94,9 @@ void StartFromLaunchOptions() {
     if (!options.fakeVersion.empty()) {
         SPDLOG_WARN("[Coop] TEST: pretending to be build '{}' (--coop-fake-version)", options.fakeVersion);
     }
+    if (options.fakeProtocol.has_value()) {
+        SPDLOG_WARN("[Coop] TEST: pretending to speak coop protocol {} (--coop-fake-protocol)", *options.fakeProtocol);
+    }
     if (options.role == Role::None) {
         return;
     }
@@ -127,7 +130,11 @@ void RegisterCoopHooks() {
 
 std::string BuildVersion() {
     const std::string& fakeVersion = GetLaunchOptions().fakeVersion;
-    return fakeVersion.empty() ? std::string(gGitCommitHash) : fakeVersion;
+    return fakeVersion.empty() ? std::string(gCoopBuildId) : fakeVersion;
+}
+
+int ProtocolVersion() {
+    return GetLaunchOptions().fakeProtocol.value_or(Protocol::kProtocolVersion);
 }
 
 bool StartHost(uint16_t port, const std::string& name, Protocol::Color color) {

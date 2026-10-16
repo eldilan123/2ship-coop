@@ -48,7 +48,8 @@ struct SessionConfig {
     std::string name;
     Protocol::Color color;
     std::string buildVersion;
-    int silenceAfterSeconds = 0; // Test only: stop heartbeats after this many seconds (0 = never)
+    int protocolVersion = Protocol::kProtocolVersion; // Only differs when faked for testing
+    int silenceAfterSeconds = 0;                      // Test only: stop heartbeats after this many seconds (0 = never)
 };
 
 struct SessionSnapshot {

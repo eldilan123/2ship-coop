@@ -178,6 +178,20 @@ set(ALL_FILES
 ################################################################################
 add_executable(${PROJECT_NAME} ${ALL_FILES})
 
+# Coop build ID, recomputed on every build (not only at configure time) from the git state. See the script.
+set(COOP_BUILD_ID_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/2s2h/Coop/CoopBuildId.cmake)
+set(COOP_BUILD_ID_FILE ${CMAKE_CURRENT_BINARY_DIR}/coop/CoopBuildId.c)
+execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${COOP_BUILD_ID_FILE}
+    -DCONFIG=configure -P ${COOP_BUILD_ID_SCRIPT})
+add_custom_target(CoopBuildId
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${COOP_BUILD_ID_FILE}
+        -DCONFIG=$<CONFIG> -P ${COOP_BUILD_ID_SCRIPT}
+    BYPRODUCTS ${COOP_BUILD_ID_FILE}
+    COMMENT "Updating coop build ID"
+)
+target_sources(${PROJECT_NAME} PRIVATE ${COOP_BUILD_ID_FILE})
+add_dependencies(${PROJECT_NAME} CoopBuildId)
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 use_props(${PROJECT_NAME} "${CMAKE_CONFIGURATION_TYPES}" "${DEFAULT_CXX_PROPS}")
 endif()

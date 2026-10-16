@@ -17,6 +17,7 @@ struct LaunchOptions {
     std::optional<Protocol::Color> color;
     // Test only
     std::string fakeVersion;
+    std::optional<int> fakeProtocol;
     int quitAfterSeconds = 0;
     int silenceAfterSeconds = 0;
     // Parse problems, logged once the logger exists

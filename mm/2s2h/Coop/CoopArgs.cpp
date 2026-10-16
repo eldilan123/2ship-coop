@@ -109,6 +109,13 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             if (const char* value = takeValue()) {
                 options.fakeVersion = value;
             }
+        } else if (arg == "--coop-fake-protocol") {
+            const char* value = takeValue();
+            if (value != nullptr && ParseInt(value, 0, 1000000, number)) {
+                options.fakeProtocol = static_cast<int>(number);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-fake-protocol: '{}' is not a number", value));
+            }
         } else if (arg == "--coop-quit-after" || arg == "--coop-silence-after") {
             const char* value = takeValue();
             if (value != nullptr && ParseInt(value, 1, 24 * 60 * 60, number)) {

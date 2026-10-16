@@ -24,8 +24,11 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]);
 using JsonHandler = std::function<void(uint32_t from, const nlohmann::json& message)>;
 using BinaryHandler = std::function<void(uint32_t from, const std::vector<uint8_t>& payload)>;
 
-// Build identifier exchanged in the handshake (git commit hash, unless overridden for testing).
+// Build ID exchanged in the handshake: regenerated on every build from the git commit, a hash of uncommitted changes
+// and the build config (see CoopBuildId.cmake), unless overridden for testing.
 std::string BuildVersion();
+// Coop protocol number (Protocol::kProtocolVersion, bumped by hand), unless overridden for testing.
+int ProtocolVersion();
 
 bool StartHost(uint16_t port, const std::string& name, Protocol::Color color);
 bool StartJoin(const std::string& address, uint16_t port, const std::string& name, Protocol::Color color);

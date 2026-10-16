@@ -13,7 +13,9 @@
 // The first byte tells them apart, so both kinds can be interleaved on the same socket.
 namespace Coop::Protocol {
 
-// Bump when the meaning of any message changes; checked in the handshake alongside the build hash.
+// Coop protocol number. BUMP BY HAND whenever the wire format or the meaning of any message changes (new required
+// field, changed type, new binary channel layout...). The host rejects a client whose protocol number or build ID
+// differs from its own.
 constexpr int kProtocolVersion = 1;
 
 constexpr uint8_t kBinaryMarker = 0x01;

@@ -369,7 +369,8 @@ void CoopNet::RunHost() {
     mNextPlayerId = kHostPlayerId + 1;
 
     SetState(SessionState::Hosting, fmt::format("Hosting on port {}", mConfig.port));
-    COOP_INFO("Hosting on port {} as '{}' (build {})", mConfig.port, mConfig.name, mConfig.buildVersion);
+    COOP_INFO("Hosting on port {} as '{}' (build {}, protocol {})", mConfig.port, mConfig.name, mConfig.buildVersion,
+              mConfig.protocolVersion);
     bool playersChanged = true;
 
     while (!mStopRequested.load()) {
@@ -522,10 +523,10 @@ void CoopNet::HostHandleHello(Connection& conn, const Protocol::Frame& frame, si
     const std::string version = Printable(Protocol::GetString(hello, "version", "unknown"), 64);
     conn.name = Protocol::SanitizeName(Protocol::GetString(hello, "name"));
 
-    if (protocol != Protocol::kProtocolVersion) {
+    if (protocol != mConfig.protocolVersion) {
         HostReject(conn, fmt::format("Coop protocol mismatch: the host uses protocol {} but you use {}. Both players "
                                      "must run the same build.",
-                                     Protocol::kProtocolVersion, protocol));
+                                     mConfig.protocolVersion, protocol));
         return;
     }
     if (version != mConfig.buildVersion) {
@@ -573,7 +574,8 @@ std::vector<PlayerInfo> CoopNet::HostBuildPlayerList(const std::vector<std::uniq
 void CoopNet::RunClient() {
     const std::string target = fmt::format("{}:{}", mConfig.address, mConfig.port);
     SetState(SessionState::Connecting, fmt::format("Connecting to {}", target));
-    COOP_INFO("Connecting to {} as '{}' (build {})", target, mConfig.name, mConfig.buildVersion);
+    COOP_INFO("Connecting to {} as '{}' (build {}, protocol {})", target, mConfig.name, mConfig.buildVersion,
+              mConfig.protocolVersion);
 
     IPaddress hostAddress;
     if (SDLNet_ResolveHost(&hostAddress, mConfig.address.c_str(), mConfig.port) != 0) {
@@ -600,7 +602,7 @@ void CoopNet::RunClient() {
     SetState(SessionState::Handshaking, fmt::format("Connected to {}, waiting for the host to accept", target));
     COOP_INFO("Connected to {}, sending handshake", target);
     SendControl(host, { { "type", "hello" },
-                        { "protocol", Protocol::kProtocolVersion },
+                        { "protocol", mConfig.protocolVersion },
                         { "version", mConfig.buildVersion },
                         { "name", mConfig.name },
                         { "color", Protocol::ColorToJson(mConfig.color) } });
