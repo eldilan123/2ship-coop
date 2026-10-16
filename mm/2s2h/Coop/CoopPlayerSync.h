@@ -90,6 +90,8 @@ struct Sample {
 void Frame();
 // Interpolated state of every remote player that has sent one. Game thread.
 std::vector<Sample> SampleRemotes();
+// Newest state received from `playerId` (not interpolated). False if none yet.
+bool LatestState(uint32_t playerId, State& out);
 // Forget every remote state (session ended).
 void Reset();
 

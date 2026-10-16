@@ -8,6 +8,7 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopPlayerSync.h"
 #include "CoopSaveGuard.h"
 #include "CoopSnapshot.h"
 #include "2s2h/BenGui/Notification.h"
@@ -51,8 +52,10 @@ struct PendingDestination {
     int16_t sceneId;
     uint32_t seq;
     bool force; // Reload even if already in that scene (releases a held exit)
+    std::chrono::steady_clock::time_point since;
 };
 PendingDestination sPending = {};
+void ArriveNextToHost(uint16_t entrance, int16_t sceneId);
 bool sFollowInProgress = false; // Our own transition to the host's scene; never intercepted
 
 // Exit the client walked into, waiting for the host to take it (scene change part 2).
@@ -174,6 +177,7 @@ void ClientEnterGameplay(const Snapshot::Parsed& snapshot) {
 
     SetClientInSession(true, "entering the host's session");
     GameInteractor_ExecuteOnSaveLoad(gSaveContext.fileNum);
+    ArriveNextToHost(static_cast<uint16_t>(snapshot.header.entrance), snapshot.header.sceneId);
 
     STOP_GAMESTATE(gGameState);
     SET_NEXT_GAMESTATE(gGameState, Play_Init, sizeof(PlayState));
@@ -226,13 +230,37 @@ void ClientOnSnapshot(uint32_t, const std::vector<uint8_t>& bytes) {
         SPDLOG_INFO("[Coop] Replacing pending destination (scene {} from snapshot #{}) with scene {} from #{}",
                     sPending.sceneId, sPending.seq, h.sceneId, h.seq);
     }
-    sPending = { true, h.entrance, h.sceneLayer, h.sceneId, h.seq };
+    sPending = { true, h.entrance, h.sceneLayer, h.sceneId, h.seq, false, std::chrono::steady_clock::now() };
+}
+
+constexpr auto kWaitForHostState = std::chrono::milliseconds(500);
+
+// Rooms (pending since milestone 1): with the host's position known, the client arrives in the host's room and spot
+// instead of at the entrance's spawn point, the way WarpPoint places Link (respawn data + respawnFlag -8).
+void ArriveNextToHost(uint16_t entrance, int16_t sceneId) {
+    PlayerSync::State host;
+    if (!PlayerSync::LatestState(kHostPlayerId, host) || host.sceneId != sceneId || !host.inGameplay) {
+        return;
+    }
+    RespawnData& respawn = gSaveContext.respawn[RESPAWN_MODE_DOWN];
+    respawn.entrance = entrance;
+    respawn.roomIndex = static_cast<u8>(host.roomNum);
+    respawn.pos = host.pos;
+    respawn.yaw = host.shapeRot.y;
+    respawn.playerParams = PLAYER_PARAMS(0xFF, PLAYER_START_MODE_D);
+    respawn.tempSwitchFlags = 0;
+    respawn.unk_18 = 0;
+    respawn.tempCollectFlags = 0;
+    gSaveContext.respawnFlag = -8;
+    SPDLOG_INFO("[Coop] Arriving next to the host: scene {} room {} pos ({:.0f}, {:.0f}, {:.0f})", sceneId,
+                host.roomNum, host.pos.x, host.pos.y, host.pos.z);
 }
 
 // Same as the debug console "entrance" command: let Play's own transition code load the host's scene.
 void ClientFollowHost(const PendingDestination& dest) {
     const uint16_t entrance = static_cast<uint16_t>(dest.entrance);
     gPlayState->nextEntrance = entrance & ~0xF;
+    ArriveNextToHost(gPlayState->nextEntrance, dest.sceneId);
     // A scene layer is selected through the cutscene index, as cutscene destinations do (see z_demo.c).
     gSaveContext.nextCutsceneIndex = dest.sceneLayer > 0 ? 0xFFEF + dest.sceneLayer : 0xFFEF;
     gPlayState->transitionTrigger = TRANS_TRIGGER_START;
@@ -273,6 +301,13 @@ void ClientUpdateSceneFollow() {
     if (gPlayState->transitionTrigger != TRANS_TRIGGER_OFF || gPlayState->transitionMode != TRANS_MODE_OFF) {
         return;
     }
+    // The scene snapshot arrives just before the host's first state in that scene; give it a moment so we can
+    // arrive in the host's room, next to it (see ClientFollowHost).
+    PlayerSync::State host;
+    const bool hostThere = PlayerSync::LatestState(kHostPlayerId, host) && host.sceneId == sPending.sceneId;
+    if (!hostThere && std::chrono::steady_clock::now() - sPending.since < kWaitForHostState) {
+        return;
+    }
     const PendingDestination dest = sPending;
     sPending.active = false;
     if (sHeldExit.active) {
@@ -306,7 +341,13 @@ void ClientInterceptExit() {
                         sHeldExit.entrance);
             Notify("Coop: the host could not take that exit right now.");
             // Reloading the host's entrance also releases the player frozen by the held exit.
-            sPending = { true, sLastHost.entrance, sLastHost.sceneLayer, sLastHost.sceneId, sLastHost.seq, true };
+            sPending = { true,
+                         sLastHost.entrance,
+                         sLastHost.sceneLayer,
+                         sLastHost.sceneId,
+                         sLastHost.seq,
+                         true,
+                         std::chrono::steady_clock::now() };
         }
         return;
     }
@@ -376,9 +417,14 @@ void OnSceneInit(s8 sceneId, s8 spawnNum) {
                     static_cast<uint16_t>(gSaveContext.save.entrance));
     }
     if (sStage == ClientStage::InSession) {
-        SPDLOG_INFO("[Coop] Scene check: local scene {} entrance 0x{:04X}, host scene {} entrance 0x{:04X} ({})",
-                    sceneId, static_cast<uint16_t>(gSaveContext.save.entrance), sLastHost.sceneId,
-                    static_cast<uint16_t>(sLastHost.entrance), sceneId == sLastHost.sceneId ? "match" : "MISMATCH");
+        PlayerSync::State host;
+        const int hostRoom =
+            PlayerSync::LatestState(kHostPlayerId, host) && host.sceneId == sceneId ? host.roomNum : -1;
+        SPDLOG_INFO("[Coop] Scene check: local scene {} entrance 0x{:04X} room {}, host scene {} entrance 0x{:04X} "
+                    "room {} ({})",
+                    sceneId, static_cast<uint16_t>(gSaveContext.save.entrance), gPlayState->roomCtx.curRoom.num,
+                    sLastHost.sceneId, static_cast<uint16_t>(sLastHost.entrance), hostRoom,
+                    sceneId == sLastHost.sceneId ? "match" : "MISMATCH");
     }
 }
 

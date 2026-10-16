@@ -361,6 +361,15 @@ std::vector<Sample> SampleRemotes() {
     return samples;
 }
 
+bool LatestState(uint32_t playerId, State& out) {
+    auto it = sRemotes.find(playerId);
+    if (it == sRemotes.end() || it->second.states.empty()) {
+        return false;
+    }
+    out = it->second.states.back().state;
+    return true;
+}
+
 void Reset() {
     sRemotes.clear();
 }
