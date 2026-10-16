@@ -10,6 +10,7 @@
 #include "CoopSaveGuard.h"
 #include "CoopSnapshot.h"
 #include "2s2h/BenGui/Notification.h"
+#include "2s2h/BenGui/BenGui.hpp"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -18,6 +19,7 @@ extern "C" {
 #include "variables.h"
 #include "functions.h"
 #include "macros.h"
+#include "overlays/gamestates/ovl_title/z_title.h"
 }
 
 namespace Coop {
@@ -31,6 +33,7 @@ enum class ClientStage {
     Requested, // "Enter session" sent, waiting for the join snapshot
     Entering,  // Snapshot applied, switching to Play
     InSession, // Playing on the host's world
+    Leaving,   // Session lost: going back to the title screen; saving stays blocked until we get there
 };
 
 ClientStage sStage = ClientStage::None;
@@ -272,10 +275,32 @@ void OnPlayDestroy() {
     }
 }
 
+// Decision (e): a client that loses the session sees why and goes back to the title screen without saving.
+void ClientLeaveSession(const std::string& reason) {
+    SPDLOG_WARN("[Coop] Session lost ({}). Returning to the title screen without saving.", reason);
+    BenGui::RegisterPopup("Coop: disconnected", reason + "\n\nReturning to the title screen. Nothing was saved.");
+    sStage = ClientStage::Leaving;
+    sPending = {};
+    Clock::Reset();
+    if (gGameState != nullptr) {
+        STOP_GAMESTATE(gGameState);
+        SET_NEXT_GAMESTATE(gGameState, ConsoleLogo_Init, sizeof(ConsoleLogoState));
+    }
+}
+
+// The title screen starts from a fresh SaveContext, so the session state can no longer reach a save from here on.
+void OnConsoleLogoUpdate() {
+    if (sStage == ClientStage::Leaving) {
+        sStage = ClientStage::None;
+        SetClientInSession(false, "reached the title screen");
+    }
+}
+
 void RegisterSessionHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnSceneInit>(OnSceneInit);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayDestroy>(OnPlayDestroy);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRoomInit>(OnRoomInit);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     RegisterJsonHandler("host_room", ClientOnHostRoom);
     RegisterJsonHandler("enter_request", HostOnEnterRequest);
     RegisterJsonHandler("enter_denied", ClientOnEnterDenied);
@@ -325,6 +350,14 @@ std::string SessionStatusText() {
 }
 
 void SessionFrame() {
+    if (sStage == ClientStage::Requested && !IsConnectedClient()) {
+        sStage = ClientStage::None;
+    }
+    if ((sStage == ClientStage::Entering || sStage == ClientStage::InSession) && !IsConnectedClient()) {
+        const SessionSnapshot net = GetSnapshot();
+        ClientLeaveSession(net.message.empty() ? "The connection to the host was closed" : net.message);
+        return;
+    }
     if (sStage == ClientStage::InSession) {
         ClientUpdateSceneFollow();
     }
