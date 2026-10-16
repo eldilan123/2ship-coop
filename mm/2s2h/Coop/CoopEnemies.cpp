@@ -663,6 +663,8 @@ struct Known {
     bool gaveUp = false;
     bool loggedWait = false;
     bool loggedJoints = false;
+    float intervalMs = 1000.0f / kNearRateHz; // Average time between this enemy's states
+    uint32_t lastSentMs = 0;
 };
 
 struct Puppet {
@@ -1157,6 +1159,10 @@ void Merge(Known& known, const Decoded& d, uint32_t seq, uint32_t sentMs) {
     if (flags & kFull) {
         m.haveBase = true;
     }
+    if (known.lastSentMs != 0 && sentMs - known.lastSentMs < 1000) {
+        known.intervalMs += (static_cast<float>(sentMs - known.lastSentMs) - known.intervalMs) / 4.0f;
+    }
+    known.lastSentMs = sentMs;
     if (m.haveBase) {
         known.history.push_back(m);
         while (known.history.size() > 2 && sentMs - known.history.front().sentMs > kHistoryMs) {
@@ -1342,25 +1348,27 @@ void SampleAndApply(uint32_t now) {
         }
         auto puppet = sPuppets.find(known.actor);
         if (puppet != sPuppets.end()) {
-            ApplyPose(known.actor, puppet->second, known, PoseAt(known.history, target));
+            // Far enemies arrive less often than the delay covers: wait a little longer for them instead of
+            // holding their last pose (they move in steps otherwise).
+            const int64_t own = std::clamp<int64_t>(static_cast<int64_t>(known.intervalMs * 1.25f) + 20, 0, 600);
+            const int64_t extra = std::max<int64_t>(0, own - sDelayMs);
+            ApplyPose(known.actor, puppet->second, known, PoseAt(known.history, target - extra));
         }
     }
-    // Test log, once the host's logged batch is due here: the puppet's pose at exactly that host time (what the
-    // client reproduces) and the one on screen this frame (up to a frame later), to compare with the host's log.
-    while (!sLogBatches.empty() && static_cast<int64_t>(sLogBatches.front().second) <= target) {
+    // Test log: the puppet's pose at exactly the host time of a logged batch, as the client reconstructs it, once
+    // the states around that time have arrived (far enemies send every 200 ms). The host logs the same batch.
+    while (!sLogBatches.empty() && static_cast<int64_t>(sLogBatches.front().second) + 400 <= target) {
         const auto [seq, sentMs] = sLogBatches.front();
         sLogBatches.pop_front();
         for (const auto& [netId, known] : sKnown) {
             auto puppet = known.actor != nullptr ? sPuppets.find(known.actor) : sPuppets.end();
-            if (puppet == sPuppets.end() || !puppet->second.visible || known.history.empty()) {
+            if (puppet == sPuppets.end() || !puppet->second.visible || known.history.empty() ||
+                known.history.front().sentMs > sentMs) {
                 continue;
             }
             const Vec3f at = PoseAt(known.history, sentMs).pos;
-            const Vec3f& shown = known.actor->world.pos;
-            SPDLOG_INFO("[Coop] Enemy puppet sample: seq {} net {} {} pos ({:.1f}, {:.1f}, {:.1f}) shown ({:.1f}, "
-                        "{:.1f}, {:.1f}) late {} ms",
-                        seq, netId, TypeName(known.record.actorId), at.x, at.y, at.z, shown.x, shown.y, shown.z,
-                        static_cast<int64_t>(target - sentMs));
+            SPDLOG_INFO("[Coop] Enemy puppet sample: seq {} net {} {} pos ({:.1f}, {:.1f}, {:.1f})", seq, netId,
+                        TypeName(known.record.actorId), at.x, at.y, at.z);
         }
     }
 }
