@@ -20,8 +20,9 @@ struct LaunchOptions {
     std::optional<int> fakeProtocol;
     int quitAfterSeconds = 0;
     int silenceAfterSeconds = 0;
-    bool testEnter = false;    // Client: press "Enter session" automatically once connected
-    bool testClockLog = false; // Both: log a clock sample every second while in gameplay
+    bool testEnter = false;           // Client: press "Enter session" automatically once connected
+    bool testClockLog = false;        // Both: log a clock sample every second while in gameplay
+    bool testHostRefuseExits = false; // Host: refuse every scene_request (tests the client timeout)
     // Host: boot straight into gameplay on the game's debug save (in memory) at this entrance
     std::optional<uint16_t> testDebugSaveEntrance;
     // Host: boot to file select and load this slot (1-3) through the same route as choosing it
@@ -38,6 +39,8 @@ struct LaunchOptions {
     std::optional<int> testForceSaveAt;
     // Client: seconds after entering the session to simulate answering "Yes" to the Song of Time and an owl statue
     std::optional<int> testBlockSongsAt;
+    // Client: walk into an exit to this entrance (hex) at these seconds after entering the session
+    std::vector<TimedValue> testClientExit;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

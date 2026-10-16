@@ -18,8 +18,9 @@ namespace Coop::Protocol {
 // differs from its own.
 constexpr int kProtocolVersion = 2;
 
-// Binary channels (SendBinary). JSON control types are listed in CoopNet.cpp; application JSON types are
-// "enter_request" (client asks to enter the host's world) and "enter_denied".
+// Binary channels (SendBinary). JSON control types are listed in CoopNet.cpp. Application JSON types:
+// "enter_request" / "enter_denied" (client enters the host's world), "host_room" (host changed room) and
+// "scene_request" (client asks the host to take an exit).
 constexpr uint8_t kChannelSnapshot = 1; // Session snapshot, see CoopSnapshot.h
 constexpr uint8_t kChannelClock = 2;    // Host clock, see CoopClock.h
 

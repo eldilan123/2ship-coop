@@ -21,6 +21,7 @@ extern "C" {
 #include "functions.h"
 #include "macros.h"
 #include "overlays/gamestates/ovl_title/z_title.h"
+extern SceneEntranceTableEntry sSceneEntranceTable[];
 }
 
 namespace Coop {
@@ -49,8 +50,29 @@ struct PendingDestination {
     int32_t sceneLayer;
     int16_t sceneId;
     uint32_t seq;
+    bool force; // Reload even if already in that scene (releases a held exit)
 };
 PendingDestination sPending = {};
+bool sFollowInProgress = false; // Our own transition to the host's scene; never intercepted
+
+// Exit the client walked into, waiting for the host to take it (scene change part 2).
+using SteadyClock = std::chrono::steady_clock;
+constexpr auto kExitRequestTimeout = std::chrono::seconds(3);
+struct HeldExit {
+    bool active;
+    uint16_t entrance;
+    uint16_t nextCutsceneIndex;
+    SteadyClock::time_point since;
+};
+HeldExit sHeldExit = {};
+
+// Entrances from the network index the scene entrance tables; reject anything outside them.
+bool IsValidEntrance(uint16_t entrance) {
+    const uint32_t scene = entrance >> 9;
+    const uint32_t spawn = (entrance >> 4) & 0x1F;
+    return scene < ENTR_SCENE_MAX && sSceneEntranceTable[scene].table != nullptr &&
+           spawn < sSceneEntranceTable[scene].tableCount && (entrance & 0xF) == 0;
+}
 
 // MARK: - Host state
 
@@ -253,10 +275,78 @@ void ClientUpdateSceneFollow() {
     }
     const PendingDestination dest = sPending;
     sPending.active = false;
-    if (gPlayState->sceneId == dest.sceneId) {
+    sHeldExit.active = false;
+    if (gPlayState->sceneId == dest.sceneId && !dest.force) {
         return;
     }
+    sFollowInProgress = true;
     ClientFollowHost(dest);
+}
+
+// Scene change, part 2: when the client walks into a door or loading zone that leads to another scene, the exit is
+// held (the player is already frozen by the exit code) and the host is asked to take it. The host's scene snapshot
+// then moves everyone. Respawns (void out, death, grottos returning) and same-scene changes stay local.
+void ClientInterceptExit() {
+    if (sHeldExit.active) {
+        // The exit code may set the trigger again while the player stands on the exit; keep it from starting.
+        if (gPlayState->transitionTrigger == TRANS_TRIGGER_START && gPlayState->transitionMode == TRANS_MODE_OFF) {
+            gPlayState->transitionTrigger = TRANS_TRIGGER_OFF;
+        }
+        if (SteadyClock::now() - sHeldExit.since > kExitRequestTimeout) {
+            sHeldExit.active = false;
+            SPDLOG_WARN("[Coop] The host did not take the exit to entrance 0x{:04X}; going back to the host's scene",
+                        sHeldExit.entrance);
+            Notify("Coop: the host could not take that exit right now.");
+            // Reloading the host's entrance also releases the player frozen by the held exit.
+            sPending = { true, sLastHost.entrance, sLastHost.sceneLayer, sLastHost.sceneId, sLastHost.seq, true };
+        }
+        return;
+    }
+    if (sFollowInProgress || gPlayState->transitionTrigger != TRANS_TRIGGER_START ||
+        gPlayState->transitionMode != TRANS_MODE_OFF || gSaveContext.respawnFlag != 0 ||
+        gPlayState->gameOverCtx.state != GAMEOVER_INACTIVE) {
+        return;
+    }
+    const uint16_t entrance = gPlayState->nextEntrance;
+    if (!IsValidEntrance(entrance) || Entrance_GetSceneIdAbsolute(entrance) == gPlayState->sceneId) {
+        return;
+    }
+    gPlayState->transitionTrigger = TRANS_TRIGGER_OFF;
+    sHeldExit = { true, entrance, gSaveContext.nextCutsceneIndex, SteadyClock::now() };
+    SendJson(kHostPlayerId,
+             { { "type", "scene_request" }, { "entrance", entrance }, { "cutscene", gSaveContext.nextCutsceneIndex } });
+    SPDLOG_INFO("[Coop] Exit to entrance 0x{:04X} (scene {}) held; asking the host to take it", entrance,
+                Entrance_GetSceneIdAbsolute(entrance));
+}
+
+// Host side of part 2: take the exit a client asked for, if the host can change scenes right now.
+void HostOnSceneRequest(uint32_t from, const nlohmann::json& message) {
+    const int64_t entrance = Protocol::GetInt(message, "entrance", -1);
+    const int64_t cutscene = Protocol::GetInt(message, "cutscene", 0xFFEF);
+    const char* refusal = nullptr;
+    if (entrance < 0 || entrance > 0xFFFF || !IsValidEntrance(static_cast<uint16_t>(entrance)) || cutscene < 0 ||
+        cutscene > 0xFFFF) {
+        refusal = "invalid entrance";
+    } else if (!InGameplay() || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
+               gPlayState->transitionMode != TRANS_MODE_OFF) {
+        refusal = "the host is changing scenes";
+    } else if (gPlayState->msgCtx.msgMode != MSGMODE_NONE || Play_InCsMode(gPlayState)) {
+        refusal = "the host is in a text box or cutscene";
+    } else if (GetLaunchOptions().testHostRefuseExits) {
+        refusal = "--coop-test-host-refuse-exits";
+    }
+    if (refusal != nullptr) {
+        SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; not now ({})", from,
+                    static_cast<uint16_t>(entrance), refusal);
+        return;
+    }
+    SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; the host takes the exit", from,
+                static_cast<uint16_t>(entrance));
+    gPlayState->nextEntrance = static_cast<uint16_t>(entrance);
+    gSaveContext.nextCutsceneIndex = static_cast<uint16_t>(cutscene);
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+    gPlayState->transitionType = TRANS_TYPE_FADE_BLACK;
+    gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK;
 }
 
 // MARK: - Hooks
@@ -270,6 +360,8 @@ void OnSceneInit(s8 sceneId, s8 spawnNum) {
         HostSendSnapshot(cycleReset ? Snapshot::Reason::Cycle : Snapshot::Reason::Scene, kBroadcast);
         return;
     }
+    sFollowInProgress = false;
+    sHeldExit.active = false;
     if (sStage == ClientStage::Entering && InGameplay()) {
         sStage = ClientStage::InSession;
         SPDLOG_INFO("[Coop] Entered the session: scene {} spawn {} entrance 0x{:04X}", sceneId, spawnNum,
@@ -310,6 +402,7 @@ void ClientLeaveSession(const std::string& reason) {
     BenGui::RegisterPopup("Coop: disconnected", reason + "\n\nReturning to the title screen. Nothing was saved.");
     sStage = ClientStage::Leaving;
     sPending = {};
+    sHeldExit = {};
     Clock::Reset();
     if (gGameState != nullptr) {
         STOP_GAMESTATE(gGameState);
@@ -331,6 +424,7 @@ void RegisterSessionHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRoomInit>(OnRoomInit);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     RegisterJsonHandler("host_room", ClientOnHostRoom);
+    RegisterJsonHandler("scene_request", HostOnSceneRequest);
     RegisterJsonHandler("enter_request", HostOnEnterRequest);
     RegisterJsonHandler("enter_denied", ClientOnEnterDenied);
     RegisterBinaryHandler(Protocol::kChannelSnapshot, ClientOnSnapshot);
@@ -352,6 +446,8 @@ void RequestEnterSession() {
     sLastSnapshotSeq = 0;
     Clock::Reset();
     sPending = {};
+    sFollowInProgress = false;
+    sHeldExit = {};
     SendJson(kHostPlayerId, { { "type", "enter_request" } });
     SPDLOG_INFO("[Coop] Asked the host to enter the session");
 }
@@ -390,6 +486,7 @@ void SessionFrame() {
     if (sStage == ClientStage::InSession) {
         if (InGameplay()) {
             ClientBlockHostOnlyActions();
+            ClientInterceptExit();
         }
         ClientUpdateSceneFollow();
     }

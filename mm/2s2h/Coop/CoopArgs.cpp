@@ -146,6 +146,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testEnter = true;
         } else if (arg == "--coop-test-clock-log") {
             options.testClockLog = true;
+        } else if (arg == "--coop-test-host-refuse-exits") {
+            options.testHostRefuseExits = true;
         } else if (arg == "--coop-test-debug-save") {
             const char* value = takeValue();
             uint16_t entrance = 0;
@@ -161,12 +163,15 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("--coop-autoload-slot: '{}' is not a slot (1-3)", value));
             }
-        } else if (arg == "--coop-test-goto" || arg == "--coop-test-timejump") {
-            const bool isGoto = arg == "--coop-test-goto";
+        } else if (arg == "--coop-test-goto" || arg == "--coop-test-timejump" || arg == "--coop-test-client-exit") {
+            const bool isGoto = arg != "--coop-test-timejump";
             const char* value = takeValue();
             LaunchOptions::TimedValue timed;
             if (value != nullptr && ParseTimed(value, isGoto, timed)) {
-                (isGoto ? options.testGoto : options.testTimeJump).push_back(timed);
+                (arg == "--coop-test-goto"       ? options.testGoto
+                 : arg == "--coop-test-timejump" ? options.testTimeJump
+                                                 : options.testClientExit)
+                    .push_back(timed);
             } else if (value != nullptr) {
                 options.warnings.push_back(
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));

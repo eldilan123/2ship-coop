@@ -41,6 +41,7 @@ size_t sNextTimeJump = 0;
 bool sResetCycleDone = false;
 bool sForceSaveDone = false;
 int sBlockSongsStep = 0;
+size_t sNextClientExit = 0;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -227,9 +228,25 @@ void UpdateForceSave() {
     }
 }
 
+// --coop-test-client-exit: sets up a scene exit at the end of the frame, as Player's loading-zone code does, so the
+// session code sees it at the start of the next frame.
+void UpdateClientExit() {
+    const auto& exits = GetLaunchOptions().testClientExit;
+    if (sNextClientExit >= exits.size() || !IsClientInSession() || !InGameplay() ||
+        GameplaySeconds() < exits[sNextClientExit].atSeconds || !NoTransitionInProgress()) {
+        return;
+    }
+    const uint16_t entrance = static_cast<uint16_t>(exits[sNextClientExit].value);
+    sNextClientExit++;
+    SPDLOG_INFO("[Coop] TEST: client walks into an exit to entrance 0x{:04X}", entrance);
+    gPlayState->nextEntrance = entrance;
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+}
+
 // --coop-test-block-songs: leaves msgMode exactly as Message_Update does when the player answers "Yes" to the Song of
 // Time and then to an owl statue. It runs at the end of the frame, so the coop frame hook sees it first next frame.
 void OnGameStateMainFinish() {
+    UpdateClientExit();
     const std::optional<int>& at = GetLaunchOptions().testBlockSongsAt;
     if (!at.has_value() || sBlockSongsStep >= 2 || !IsClientInSession() || !InGameplay() ||
         GameplaySeconds() < *at + sBlockSongsStep * 2) {
