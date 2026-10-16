@@ -275,7 +275,15 @@ void ClientUpdateSceneFollow() {
     }
     const PendingDestination dest = sPending;
     sPending.active = false;
-    sHeldExit.active = false;
+    if (sHeldExit.active) {
+        if ((static_cast<uint16_t>(dest.entrance) & ~0xF) == sHeldExit.entrance) {
+            SPDLOG_INFO("[Coop] Held exit to entrance 0x{:04X}: the host took it", sHeldExit.entrance);
+        } else {
+            SPDLOG_INFO("[Coop] Held exit to entrance 0x{:04X} dropped: the host moved to scene {} first",
+                        sHeldExit.entrance, dest.sceneId);
+        }
+        sHeldExit.active = false;
+    }
     if (gPlayState->sceneId == dest.sceneId && !dest.force) {
         return;
     }
