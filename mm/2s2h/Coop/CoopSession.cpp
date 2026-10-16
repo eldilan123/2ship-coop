@@ -37,6 +37,16 @@ uint32_t sLastSnapshotSeq = 0;
 Snapshot::Header sLastHost = {}; // Header of the last applied snapshot
 uint8_t sEnterWeekEventReg92 = 0;
 
+// Scene the client has to move to, from the newest snapshot. Only one is kept.
+struct PendingDestination {
+    bool active;
+    int32_t entrance;
+    int32_t sceneLayer;
+    int16_t sceneId;
+    uint32_t seq;
+};
+PendingDestination sPending = {};
+
 // MARK: - Host state
 
 uint32_t sNextSnapshotSeq = 1;
@@ -181,6 +191,43 @@ void ClientOnSnapshot(uint32_t, const std::vector<uint8_t>& bytes) {
     Snapshot::ApplyShared(snapshot, false);
     SPDLOG_INFO("[Coop] Applied snapshot #{} ({}): host scene {} entrance 0x{:04X} room {}", h.seq,
                 Snapshot::ReasonName(h.reason), h.sceneId, static_cast<uint16_t>(h.entrance), h.roomNum);
+
+    // Only the newest destination matters: if the host moved several times before we could follow, go straight to
+    // where it is now.
+    if (sPending.active) {
+        SPDLOG_INFO("[Coop] Replacing pending destination (scene {} from snapshot #{}) with scene {} from #{}",
+                    sPending.sceneId, sPending.seq, h.sceneId, h.seq);
+    }
+    sPending = { true, h.entrance, h.sceneLayer, h.sceneId, h.seq };
+}
+
+// Same as the debug console "entrance" command: let Play's own transition code load the host's scene.
+void ClientFollowHost(const PendingDestination& dest) {
+    const uint16_t entrance = static_cast<uint16_t>(dest.entrance);
+    gPlayState->nextEntrance = entrance & ~0xF;
+    // A scene layer is selected through the cutscene index, as cutscene destinations do (see z_demo.c).
+    gSaveContext.nextCutsceneIndex = dest.sceneLayer > 0 ? 0xFFEF + dest.sceneLayer : 0xFFEF;
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+    gPlayState->transitionType = TRANS_TYPE_FADE_BLACK;
+    gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK;
+    SPDLOG_INFO("[Coop] Following the host from scene {} to scene {} (entrance 0x{:04X}, layer {})",
+                gPlayState->sceneId, dest.sceneId, entrance, dest.sceneLayer);
+}
+
+void ClientUpdateSceneFollow() {
+    if (!sPending.active || !InGameplay()) {
+        return;
+    }
+    // Wait for any transition in progress (ours or the arrival fade) to finish.
+    if (gPlayState->transitionTrigger != TRANS_TRIGGER_OFF || gPlayState->transitionMode != TRANS_MODE_OFF) {
+        return;
+    }
+    const PendingDestination dest = sPending;
+    sPending.active = false;
+    if (gPlayState->sceneId == dest.sceneId) {
+        return;
+    }
+    ClientFollowHost(dest);
 }
 
 // MARK: - Hooks
@@ -202,6 +249,21 @@ void OnSceneInit(s8 sceneId, s8 spawnNum) {
     }
 }
 
+// Rooms are reported but not followed: moving the client inside a scene needs the host's position (milestone 2).
+void OnRoomInit(s8 sceneId, s8 roomNum) {
+    if (IsHosting() && InGameplay()) {
+        SendJson(kBroadcast, { { "type", "host_room" }, { "scene", sceneId }, { "room", roomNum } });
+        SPDLOG_INFO("[Coop] Host entered room {} of scene {}", roomNum, sceneId);
+    }
+}
+
+void ClientOnHostRoom(uint32_t, const nlohmann::json& message) {
+    if (sStage == ClientStage::InSession) {
+        SPDLOG_INFO("[Coop] Host is in room {} of scene {} (rooms are not followed in this milestone)",
+                    Protocol::GetInt(message, "room", -1), Protocol::GetInt(message, "scene", -1));
+    }
+}
+
 void OnPlayDestroy() {
     if (sStage == ClientStage::Entering) {
         // Play_Destroy of the title screen clears WEEKEVENTREG_92_80 after the snapshot was applied.
@@ -212,6 +274,8 @@ void OnPlayDestroy() {
 void RegisterSessionHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnSceneInit>(OnSceneInit);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayDestroy>(OnPlayDestroy);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRoomInit>(OnRoomInit);
+    RegisterJsonHandler("host_room", ClientOnHostRoom);
     RegisterJsonHandler("enter_request", HostOnEnterRequest);
     RegisterJsonHandler("enter_denied", ClientOnEnterDenied);
     RegisterBinaryHandler(Protocol::kChannelSnapshot, ClientOnSnapshot);
@@ -225,6 +289,7 @@ void RequestEnterSession() {
     }
     sStage = ClientStage::Requested;
     sLastSnapshotSeq = 0;
+    sPending = {};
     SendJson(kHostPlayerId, { { "type", "enter_request" } });
     SPDLOG_INFO("[Coop] Asked the host to enter the session");
 }
@@ -252,6 +317,10 @@ std::string SessionStatusText() {
 }
 
 void SessionFrame() {
+    if (sStage == ClientStage::InSession) {
+        ClientUpdateSceneFollow();
+    }
+
     // Test option --coop-test-enter: press "Enter session" once connected, retrying while the host is not in gameplay.
     static auto sLastTestEnter = std::chrono::steady_clock::time_point{};
     if (GetLaunchOptions().testEnter && sStage == ClientStage::None && IsConnectedClient() && gGameState != nullptr &&
