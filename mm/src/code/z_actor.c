@@ -3824,6 +3824,10 @@ Actor* Actor_SpawnAsChildAndCutscene(ActorContext* actorCtx, PlayState* play, s1
 
     Actor_AddToCategory(actorCtx, actor, profile->type);
 
+    // #region 2S2H [Coop] Before Init, so state attached here is in place for Init and for children spawned by it
+    GameInteractor_ExecuteOnActorSpawn(actor);
+    // #endregion
+
     {
         uintptr_t sp20 = gSegments[6];
 

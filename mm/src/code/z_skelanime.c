@@ -1649,6 +1649,9 @@ void SkelAnime_Init(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* skele
     if (animation != NULL) {
         Animation_PlayLoop(skelAnime, animation);
     }
+
+    // 2S2H [Coop] Lets coop find the skeletons of each enemy, wherever and however often they are set up
+    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
 }
 
 /**
@@ -1678,6 +1681,9 @@ void SkelAnime_InitFlex(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeade
     if (animation != NULL) {
         Animation_PlayLoop(skelAnime, animation);
     }
+
+    // 2S2H [Coop] Lets coop find the skeletons of each enemy, wherever and however often they are set up
+    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
 }
 
 /**
@@ -1703,6 +1709,9 @@ void SkelAnime_InitSkin(GameState* gameState, SkelAnime* skelAnime, SkeletonHead
     if (animation != NULL) {
         Animation_PlayLoop(skelAnime, animation);
     }
+
+    // 2S2H [Coop] Lets coop find the skeletons of each enemy, wherever and however often they are set up
+    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
 }
 
 /**

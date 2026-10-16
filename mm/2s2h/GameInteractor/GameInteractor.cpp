@@ -120,6 +120,12 @@ void GameInteractor_ExecuteOnPlayDestroy() {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnPlayDestroy>();
 }
 
+void GameInteractor_ExecuteOnActorSpawn(Actor* actor) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorSpawn>(actor);
+    GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorSpawn>(actor->id, actor);
+    GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnActorSpawn>(actor);
+}
+
 bool GameInteractor_ShouldActorInit(Actor* actor) {
     bool result = true;
     GameInteractor::Instance->ExecuteHooks<GameInteractor::ShouldActorInit>(actor, &result);
@@ -180,6 +186,10 @@ void GameInteractor_ExecuteOnActorDestroy(Actor* actor) {
     GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorDestroy>(actor->id, actor);
     GameInteractor::Instance->ExecuteHooksForPtr<GameInteractor::OnActorDestroy>((uintptr_t)actor, actor);
     GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnActorDestroy>(actor);
+}
+
+void GameInteractor_ExecuteOnSkelAnimeInit(SkelAnime* skelAnime) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnSkelAnimeInit>(skelAnime);
 }
 
 void GameInteractor_ExecuteOnPlayerPostLimbDraw(Player* player, s32 limbIndex) {

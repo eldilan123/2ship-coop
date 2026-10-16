@@ -516,6 +516,7 @@ void GameInteractor_ExecuteOnPlayDrawWorldStart();
 void GameInteractor_ExecuteOnPlayDrawWorldEnd();
 void GameInteractor_ExecuteOnPlayDestroy();
 
+void GameInteractor_ExecuteOnActorSpawn(Actor* actor);
 bool GameInteractor_ShouldActorInit(Actor* actor);
 void GameInteractor_ExecuteOnActorInit(Actor* actor);
 bool GameInteractor_ShouldActorUpdate(Actor* actor);
@@ -524,6 +525,7 @@ bool GameInteractor_ShouldActorDraw(Actor* actor);
 void GameInteractor_ExecuteOnActorDraw(Actor* actor);
 void GameInteractor_ExecuteOnActorKill(Actor* actor);
 void GameInteractor_ExecuteOnActorDestroy(Actor* actor);
+void GameInteractor_ExecuteOnSkelAnimeInit(SkelAnime* skelAnime);
 void GameInteractor_ExecuteOnPlayerPostLimbDraw(Player* player, s32 limbIndex);
 void GameInteractor_ExecuteOnPlayerReleaseHeldActor(PlayState* play, Player* player, Actor* heldActor);
 void GameInteractor_ExecuteOnBossDefeated(s16 actorId);
