@@ -48,6 +48,10 @@ static void UpdatePersistentMasksState() {
     // This hook draws the mask on the players head when it's active and they aren't in first person
     onPlayerPostLimbDrawHook = GameInteractor::Instance->RegisterGameHookForID<GameInteractor::OnPlayerPostLimbDraw>(
         PLAYER_LIMB_HEAD, [](Player* player, s32 limbIndex) {
+            // The persistent hood belongs to the local Link only (not to a coop puppet).
+            if (player != GET_PLAYER(gPlayState)) {
+                return;
+            }
             if (!gSaveContext.save.shipSaveInfo.persistentBunnyHood) {
                 return;
             }

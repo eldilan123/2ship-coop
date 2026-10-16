@@ -11,6 +11,7 @@
 #include "CoopPlayerSync.h"
 #include "CoopSession.h"
 #include "2s2h/BenPort.h"
+#include "2s2h/NameTag/NameTag.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -52,6 +53,8 @@ std::unordered_map<Actor*, ActorHooks> sActorHooks;
 bool sSpawning = false;
 
 std::unordered_set<std::string> sAnimNames;
+
+constexpr const char* kNameTagTag = "coop-puppet";
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -140,6 +143,34 @@ void ApplyPose(Entry& entry) {
     }
 }
 
+// The puppet's Player update never runs, so its body collider is registered here. OC only (bodies push each other);
+// AT and AC were switched off at spawn, so it neither deals nor takes damage. Skipped whenever either Link is in a
+// cutscene (doors are cutscenes), talking, or a scene change is running, so nobody gets stuck in a doorway.
+void RegisterBodyCollision(Entry& entry) {
+    Player* p = entry.actor;
+    Player* local = GET_PLAYER(gPlayState);
+    const u32 busy = PLAYER_STATE1_20000000 | PLAYER_STATE1_TALKING | PLAYER_STATE1_DEAD;
+    if ((local->stateFlags1 & busy) || (entry.sample.state.stateFlags1 & busy) ||
+        local->csAction != PLAYER_CSACTION_NONE || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
+        gPlayState->transitionMode != TRANS_MODE_OFF) {
+        return;
+    }
+    // Same shape Player_UpdateCommon gives the main Link: from the feet to just above the head (bodyPartsPos is
+    // written by the puppet's previous draw).
+    const f32 feetY =
+        (p->bodyPartsPos[PLAYER_BODYPART_LEFT_FOOT].y + p->bodyPartsPos[PLAYER_BODYPART_RIGHT_FOOT].y) * 0.5f;
+    const f32 headY = p->bodyPartsPos[PLAYER_BODYPART_HEAD].y + 10.0f;
+    p->cylinder.dim.radius = 12;
+    p->cylinder.dim.height = static_cast<s16>(headY > feetY ? headY - feetY : 50.0f);
+    p->cylinder.dim.yShift = static_cast<s16>(headY > feetY ? feetY - p->actor.world.pos.y : 0.0f);
+    // Same mass as the local Link, so a push is shared: the puppet's half is undone by the next network pose and the
+    // local Link only gets nudged, never pinned against a wall.
+    p->actor.colChkInfo.mass = local->actor.colChkInfo.mass;
+    p->actor.colChkInfo.displacement = { 0.0f, 0.0f, 0.0f };
+    Collider_UpdateCylinder(&p->actor, &p->cylinder);
+    CollisionCheck_SetOC(gPlayState, &gPlayState->colChkCtx, &p->cylinder.base);
+}
+
 // Runs inside Actor_UpdateAll for the puppet: apply the network pose instead of Player_Update.
 void OnShouldUpdate(Actor* actor, bool* should) {
     *should = false;
@@ -153,6 +184,7 @@ void OnShouldUpdate(Actor* actor, bool* should) {
         return;
     }
     ApplyPose(entry->second);
+    RegisterBodyCollision(entry->second);
 }
 
 // MARK: - Lifetime
@@ -281,6 +313,31 @@ bool Spawn(uint32_t playerId, Entry& entry, const PlayerSync::State& s) {
     actor->flags |= ACTOR_FLAG_FREEZE_EXCEPTION | ACTOR_FLAG_UPDATE_DURING_OCARINA |
                     ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED;
     actor->destroy = PuppetDestroy;
+
+    // Body only: the puppet neither deals nor takes damage yet (milestones 4 and 5). The draw code still registers
+    // the sword and shield quads, so they are switched off too.
+    p->cylinder.base.atFlags &= ~AT_ON;
+    p->cylinder.base.acFlags &= ~AC_ON;
+    p->shieldCylinder.base.atFlags &= ~AT_ON;
+    p->shieldCylinder.base.acFlags &= ~AC_ON;
+    p->shieldCylinder.base.ocFlags1 = OC1_NONE;
+    for (ColliderQuad* quad : { &p->meleeWeaponQuads[0], &p->meleeWeaponQuads[1], &p->shieldQuad }) {
+        quad->base.atFlags &= ~AT_ON;
+        quad->base.acFlags &= ~AC_ON;
+        quad->base.ocFlags1 = OC1_NONE;
+    }
+
+    // Name and color over the remote Link (removed automatically when the actor is destroyed).
+    for (const PlayerInfo& info : GetSnapshot().players) {
+        if (info.id == playerId) {
+            NameTagOptions options = {};
+            options.tag = kNameTagTag;
+            options.yOffset = 0;
+            options.textColor = { info.color.r, info.color.g, info.color.b, 255 };
+            options.noZBuffer = 0;
+            NameTag_RegisterForActorWithOptions(actor, info.name.c_str(), options);
+        }
+    }
 
     entry.actor = p;
     entry.form = s.form;

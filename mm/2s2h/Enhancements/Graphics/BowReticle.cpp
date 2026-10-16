@@ -55,6 +55,10 @@ void DrawBowReticle(PlayState* play, Player* player, f32 bowDistance) {
 
 void RegisterBowReticle() {
     COND_ID_HOOK(OnPlayerPostLimbDraw, PLAYER_LIMB_RIGHT_HAND, CVAR, [](Player* player, s32 limbIndex) {
+        // Only the local Link aims; another Player (a coop puppet) never draws a reticle.
+        if (player != GET_PLAYER(gPlayState)) {
+            return;
+        }
         if (player->actor.scale.y >= 0.0f &&
             ((player->heldItemAction == PLAYER_IA_BOW_FIRE) || (player->heldItemAction == PLAYER_IA_BOW_ICE) ||
              (player->heldItemAction == PLAYER_IA_BOW_LIGHT) || (player->heldItemAction == PLAYER_IA_BOW))) {

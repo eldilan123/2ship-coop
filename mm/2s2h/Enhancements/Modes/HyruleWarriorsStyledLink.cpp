@@ -16,6 +16,10 @@ extern const char* D_801C0B20[28];
 
 void RegisterHyruleWarriorsStyledLink() {
     COND_ID_HOOK(OnPlayerPostLimbDraw, PLAYER_LIMB_HEAD, CVAR, [](Player* player, s32 limbIndex) {
+        // Reads the local inventory, so it only applies to the local Link (not to a coop puppet).
+        if (player != GET_PLAYER(gPlayState)) {
+            return;
+        }
         // This emulates the vanilla check for if the masks should be drawn, specifically around
         // z_player.c 12923 (Player_Draw)
         if (player->stateFlags1 & PLAYER_STATE1_100000) {
@@ -41,6 +45,10 @@ void RegisterHyruleWarriorsStyledLink() {
         }
     });
     COND_ID_HOOK(OnPlayerPostLimbDraw, PLAYER_LIMB_WAIST, CVAR, [](Player* player, s32 limbIndex) {
+        // Reads the local inventory, so it only applies to the local Link (not to a coop puppet).
+        if (player != GET_PLAYER(gPlayState)) {
+            return;
+        }
         if (player->transformation == PLAYER_FORM_HUMAN && player->itemAction != PLAYER_IA_MASK_FIERCE_DEITY &&
             INV_CONTENT(ITEM_MASK_FIERCE_DEITY) == ITEM_MASK_FIERCE_DEITY) {
             OPEN_DISPS(gPlayState->state.gfxCtx);
