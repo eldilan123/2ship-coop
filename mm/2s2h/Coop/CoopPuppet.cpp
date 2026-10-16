@@ -441,6 +441,10 @@ void LogSamples() {
     if (!GetLaunchOptions().testPuppetLog || second == sLastSecond) {
         return;
     }
+    // While a client switches into the session the old gamestate (e.g. the title demo) is still running.
+    if (!IsHosting() && !IsClientPlayingInSession()) {
+        return;
+    }
     sLastSecond = second;
     Player* local = GET_PLAYER(gPlayState);
     const uint32_t selfId = IsHosting() ? kHostPlayerId : GetSnapshot().localId;
@@ -476,7 +480,7 @@ void Frame() {
         SPDLOG_WARN("[Coop] Puppet draw swap was not restored; restoring");
         RestoreDrawSwap();
     }
-    if (!SessionActive() || !InGameplay()) {
+    if (!SessionActive() || !InGameplay() || (!IsHosting() && !IsClientPlayingInSession())) {
         return;
     }
     std::vector<PlayerSync::Sample> samples = PlayerSync::SampleRemotes();

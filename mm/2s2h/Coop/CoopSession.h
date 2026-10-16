@@ -17,6 +17,8 @@ void RequestEnterSession();
 // Client: true from "Enter session" until the session ends (also while the gamestate switch is in progress).
 bool IsClientInSession();
 bool IsWaitingToEnter();
+// Client: true once the session's first scene is loaded (not while switching to it).
+bool IsClientPlayingInSession();
 // One line for the Coop window describing the client's session state.
 std::string SessionStatusText();
 

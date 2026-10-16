@@ -510,6 +510,10 @@ bool IsClientInSession() {
     return sStage == ClientStage::Entering || sStage == ClientStage::InSession;
 }
 
+bool IsClientPlayingInSession() {
+    return sStage == ClientStage::InSession;
+}
+
 bool IsWaitingToEnter() {
     return sStage == ClientStage::Requested;
 }
