@@ -20,6 +20,22 @@ struct LaunchOptions {
     std::optional<int> fakeProtocol;
     int quitAfterSeconds = 0;
     int silenceAfterSeconds = 0;
+    bool testEnter = false;    // Client: press "Enter session" automatically once connected
+    bool testClockLog = false; // Both: log a clock sample every second while in gameplay
+    // Host: boot straight into gameplay on the game's debug save (in memory) at this entrance
+    std::optional<uint16_t> testDebugSaveEntrance;
+    // Host: boot to file select and load this slot (1-3) through the same route as choosing it
+    std::optional<int> autoloadSlot;
+    // Host actions, timed in seconds since the host first reached gameplay
+    struct TimedValue {
+        int value;
+        int atSeconds;
+    };
+    std::vector<TimedValue> testGoto;     // value = entrance
+    std::vector<TimedValue> testTimeJump; // value = minutes
+    std::optional<int> testResetCycleAt;
+    // Client: seconds after entering the session to force every save path
+    std::optional<int> testForceSaveAt;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

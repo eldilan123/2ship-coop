@@ -38,6 +38,9 @@ void Stop();
 void Shutdown();
 
 bool IsRunning();
+// True while this game hosts a session / is a client whose handshake was accepted.
+bool IsHosting();
+bool IsConnectedClient();
 SessionSnapshot GetSnapshot();
 
 // Application messages. `target` is a player id or kBroadcast; clients always send to the host.

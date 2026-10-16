@@ -16,7 +16,12 @@ namespace Coop::Protocol {
 // Coop protocol number. BUMP BY HAND whenever the wire format or the meaning of any message changes (new required
 // field, changed type, new binary channel layout...). The host rejects a client whose protocol number or build ID
 // differs from its own.
-constexpr int kProtocolVersion = 1;
+constexpr int kProtocolVersion = 2;
+
+// Binary channels (SendBinary). JSON control types are listed in CoopNet.cpp; application JSON types are
+// "enter_request" (client asks to enter the host's world) and "enter_denied".
+constexpr uint8_t kChannelSnapshot = 1; // Session snapshot, see CoopSnapshot.h
+constexpr uint8_t kChannelClock = 2;    // Host clock, see CoopClock.h
 
 constexpr uint8_t kBinaryMarker = 0x01;
 constexpr size_t kBinaryHeaderSize = 6;

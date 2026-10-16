@@ -8,6 +8,8 @@
 #include <ship/Context.h>
 #include <ship/window/Window.h>
 #include "CoopArgs.h"
+#include "CoopSession.h"
+#include "CoopTest.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -83,6 +85,8 @@ void CheckQuitAfter() {
 
 void OnFrame() {
     ProcessInbox();
+    SessionFrame();
+    Test::Frame();
     CheckQuitAfter();
 }
 
@@ -169,6 +173,14 @@ void Shutdown() {
 
 bool IsRunning() {
     return sNet != nullptr && sNet->IsRunning();
+}
+
+bool IsHosting() {
+    return IsRunning() && sNet->GetSnapshot().state == SessionState::Hosting;
+}
+
+bool IsConnectedClient() {
+    return IsRunning() && sNet->GetSnapshot().state == SessionState::Connected;
 }
 
 SessionSnapshot GetSnapshot() {

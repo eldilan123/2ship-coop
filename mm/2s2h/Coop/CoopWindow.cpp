@@ -9,6 +9,7 @@
 #include <ship/window/Window.h>
 #include <ship/window/gui/Gui.h>
 #include "Coop.h"
+#include "CoopSession.h"
 #include "2s2h/BenGui/BenMenu.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -115,18 +116,33 @@ void CoopWindow::DrawElement() {
                 Coop::StartJoin(mAddress, sessionPort, mName, ConfiguredColor());
             }
         }
-    } else if (ImGui::Button(snapshot.role == Coop::Role::Host ? "Stop hosting" : "Leave session")) {
-        Coop::Stop();
+    } else {
+        if (ImGui::Button(snapshot.role == Coop::Role::Host ? "Stop hosting" : "Leave session")) {
+            Coop::Stop();
+        }
+        // Enter the host's world on an in-memory copy of its save, without choosing a slot.
+        if (snapshot.state == Coop::SessionState::Connected && !Coop::IsClientInSession()) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(Coop::IsWaitingToEnter());
+            if (ImGui::Button("Enter session")) {
+                Coop::RequestEnterSession();
+            }
+            ImGui::EndDisabled();
+        }
     }
 
     ImGui::Separator();
     ImGui::Text("Build: %s  |  Protocol: %d", Coop::BuildVersion().c_str(), Coop::ProtocolVersion());
     ImGui::TextColored(StateColor(snapshot.state), "Status: %s", Coop::SessionStateName(snapshot.state));
+    ImGui::PushTextWrapPos(0.0f);
     if (!snapshot.message.empty()) {
-        ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(snapshot.message.c_str());
-        ImGui::PopTextWrapPos();
     }
+    const std::string sessionStatus = Coop::SessionStatusText();
+    if (!sessionStatus.empty()) {
+        ImGui::TextUnformatted(sessionStatus.c_str());
+    }
+    ImGui::PopTextWrapPos();
 
     if (snapshot.players.empty()) {
         return;
