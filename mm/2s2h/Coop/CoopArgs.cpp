@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
 #include "Coop.h"
@@ -107,6 +108,49 @@ bool ParseSeconds(const char* text, int& out) {
     return true;
 }
 
+// "<form>@<seconds>"; form is a name or its PlayerTransformation number.
+bool ParseForm(const char* text, LaunchOptions::TimedValue& out) {
+    static const std::pair<const char*, int> kNames[] = {
+        { "fd", 0 },   { "fiercedeity", 0 }, { "deidad", 0 }, { "goron", 1 },
+        { "zora", 2 }, { "deku", 3 },        { "human", 4 },  { "humano", 4 },
+    };
+    const char* at = text != nullptr ? std::strchr(text, '@') : nullptr;
+    if (at == nullptr) {
+        return false;
+    }
+    const std::string name(text, at - text);
+    long seconds = 0;
+    if (!ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+        return false;
+    }
+    long form = -1;
+    for (const auto& [key, value] : kNames) {
+        if (name == key) {
+            form = value;
+        }
+    }
+    if (form < 0 && !ParseInt(name.c_str(), 0, 4, form)) {
+        return false;
+    }
+    out = { static_cast<int>(form), static_cast<int>(seconds) };
+    return true;
+}
+
+// "<x>,<y>,<z>@<seconds>"
+bool ParsePos(const char* text, LaunchOptions::TimedPos& out) {
+    if (text == nullptr) {
+        return false;
+    }
+    float x = 0, y = 0, z = 0;
+    int seconds = 0;
+    char extra = 0;
+    if (std::sscanf(text, "%f,%f,%f@%d%c", &x, &y, &z, &seconds, &extra) != 4 || seconds < 0) {
+        return false;
+    }
+    out = { x, y, z, seconds };
+    return true;
+}
+
 } // namespace
 
 const LaunchOptions& GetLaunchOptions() {
@@ -150,6 +194,22 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testHostRefuseExits = true;
         } else if (arg == "--coop-test-puppet-log") {
             options.testPuppetLog = true;
+        } else if (arg == "--coop-test-form") {
+            const char* value = takeValue();
+            LaunchOptions::TimedValue timed;
+            if (value != nullptr && ParseForm(value, timed)) {
+                options.testForm.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-test-form: '{}' is not <form>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-pos") {
+            const char* value = takeValue();
+            LaunchOptions::TimedPos timed;
+            if (value != nullptr && ParsePos(value, timed)) {
+                options.testPos.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-test-pos: '{}' is not <x>,<y>,<z>@<seconds>", value));
+            }
         } else if (arg == "--coop-test-debug-save") {
             const char* value = takeValue();
             uint16_t entrance = 0;

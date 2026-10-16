@@ -42,6 +42,8 @@ bool sResetCycleDone = false;
 bool sForceSaveDone = false;
 int sBlockSongsStep = 0;
 size_t sNextClientExit = 0;
+size_t sNextForm = 0;
+size_t sNextPos = 0;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -262,6 +264,46 @@ void OnGameStateMainFinish() {
     sBlockSongsStep++;
 }
 
+// --coop-test-form: the same in-place transformation FastTransformation.cpp does (a copy of func_8012301C): the local
+// form is written to the (per-player) save field and the Player actor re-inits with the new form's object.
+void ChangeLocalForm(u8 form) {
+    PlayState* play = gPlayState;
+    Player* player = GET_PLAYER(play);
+    SPDLOG_INFO("[Coop] TEST: local form {} -> {}", player->transformation, form);
+    gSaveContext.save.playerForm = form;
+    const s16 objectId = gPlayerFormObjectIds[form];
+    gActorOverlayTable[ACTOR_PLAYER].profile->objectId = objectId;
+    func_8012F73C(&play->objectCtx, player->actor.objectSlot, objectId);
+    player->actor.objectSlot = Object_GetSlot(&play->objectCtx, objectId);
+    player->actor.shape.rot.z = form + 1;
+    player->actor.init = PlayerCall_Init;
+    player->actor.update = PlayerCall_Update;
+    player->actor.draw = PlayerCall_Draw;
+    gSaveContext.save.equippedMask = PLAYER_MASK_NONE;
+    if (player->transformation == PLAYER_FORM_HUMAN) {
+        player->prevMask = PLAYER_MASK_NONE;
+    }
+}
+
+// Local Link changes for --coop-test-form and --coop-test-pos (host and client).
+void UpdateLocalChanges() {
+    const LaunchOptions& options = GetLaunchOptions();
+    Player* player = GET_PLAYER(gPlayState);
+    if (player == nullptr || player->actor.update != PlayerCall_Update || !NoTransitionInProgress()) {
+        return;
+    }
+    const int seconds = GameplaySeconds();
+    if (sNextForm < options.testForm.size() && seconds >= options.testForm[sNextForm].atSeconds) {
+        ChangeLocalForm(static_cast<u8>(options.testForm[sNextForm++].value));
+        return;
+    }
+    if (sNextPos < options.testPos.size() && seconds >= options.testPos[sNextPos].atSeconds) {
+        const LaunchOptions::TimedPos& pos = options.testPos[sNextPos++];
+        SPDLOG_INFO("[Coop] TEST: local position -> ({:.1f}, {:.1f}, {:.1f})", pos.x, pos.y, pos.z);
+        player->actor.world.pos = { pos.x, pos.y, pos.z };
+    }
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
@@ -284,6 +326,7 @@ void Frame() {
     } else {
         UpdateForceSave();
     }
+    UpdateLocalChanges();
 }
 
 static RegisterShipInitFunc initFunc(RegisterTestHooks);

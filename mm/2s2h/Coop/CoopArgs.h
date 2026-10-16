@@ -42,6 +42,15 @@ struct LaunchOptions {
     std::optional<int> testBlockSongsAt;
     // Client: walk into an exit to this entrance (hex) at these seconds after entering the session
     std::vector<TimedValue> testClientExit;
+    // Both: change the local Link at these seconds after reaching gameplay (forms: PlayerTransformation numbers)
+    std::vector<TimedValue> testForm;
+    struct TimedPos {
+        float x;
+        float y;
+        float z;
+        int atSeconds;
+    };
+    std::vector<TimedPos> testPos;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

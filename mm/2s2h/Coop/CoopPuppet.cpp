@@ -20,6 +20,7 @@ extern "C" {
 #include "macros.h"
 #include "functions.h"
 #include "variables.h"
+#include "z64malloc.h"
 // Defined in BenPort.cpp; its header only declares it for C files.
 void ResourceMgr_UnregisterSkeleton(SkelAnime* skelAnime);
 }
@@ -46,6 +47,8 @@ std::unordered_map<uint32_t, Entry> sPuppets;
 struct ActorHooks {
     uint32_t playerId;
     HOOK_ID shouldUpdate;
+    HOOK_ID beforeDraw;
+    HOOK_ID afterDraw;
 };
 std::unordered_map<Actor*, ActorHooks> sActorHooks;
 
@@ -121,6 +124,12 @@ void ApplyPose(Entry& entry) {
     p->av1.actionVar1 = s.actionVar1;
     p->av2.actionVar2 = s.actionVar2;
     p->blastMaskTimer = s.blastMaskTimer;
+
+    // Mask per player: only the puppet's own fields, never gSaveContext.save.equippedMask.
+    p->currentMask = s.currentMask;
+    p->prevMask = s.prevMask;
+    p->maskId = static_cast<s8>(s.currentMask);
+    p->maskObjectLoadState = 0;
     p->unk_AF0[0] = s.unk_AF0[0];
     p->unk_AF0[1] = s.unk_AF0[1];
 
@@ -187,6 +196,44 @@ void OnShouldUpdate(Actor* actor, bool* should) {
     RegisterBodyCollision(entry->second);
 }
 
+// A few draw routines read the local save instead of the Player being drawn: the sword in hand and in the sheath
+// (GET_CUR_EQUIP_VALUE) and the jinx glow (gSaveContext.jinxTimer). Around the puppet's draw they are switched to the
+// remote player's values and put back right after, so the local game never sees them changed.
+struct DrawSwap {
+    bool active = false;
+    u16 equipment = 0;
+    u16 jinxTimer = 0;
+} sDrawSwap;
+
+void RestoreDrawSwap() {
+    if (sDrawSwap.active) {
+        gSaveContext.save.saveInfo.equips.equipment = sDrawSwap.equipment;
+        gSaveContext.jinxTimer = sDrawSwap.jinxTimer;
+        sDrawSwap.active = false;
+    }
+}
+
+void BeforeDraw(Actor* actor, bool* should) {
+    if (!*should) {
+        return;
+    }
+    auto hooks = sActorHooks.find(actor);
+    if (hooks == sActorHooks.end()) {
+        return;
+    }
+    auto entry = sPuppets.find(hooks->second.playerId);
+    if (entry == sPuppets.end() || !entry->second.haveSample) {
+        return;
+    }
+    sDrawSwap = { true, gSaveContext.save.saveInfo.equips.equipment, gSaveContext.jinxTimer };
+    SET_EQUIP_VALUE(EQUIP_TYPE_SWORD, entry->second.sample.state.sword);
+    gSaveContext.jinxTimer = 0;
+}
+
+void AfterDraw(Actor*) {
+    RestoreDrawSwap();
+}
+
 // MARK: - Lifetime
 
 // Replaces Player_Destroy: frees what the secondary init path created, and nothing global (Player_Destroy would also
@@ -203,11 +250,17 @@ void PuppetDestroy(Actor* actor, PlayState* play) {
     Collider_DestroyQuad(play, &p->meleeWeaponQuads[0]);
     Collider_DestroyQuad(play, &p->meleeWeaponQuads[1]);
     Collider_DestroyQuad(play, &p->shieldQuad);
+    if (p->maskObjectSegment != nullptr) {
+        ZeldaArena_Free(p->maskObjectSegment);
+        p->maskObjectSegment = nullptr;
+    }
 
     auto hooks = sActorHooks.find(actor);
     if (hooks != sActorHooks.end()) {
         GameInteractor::Instance->UnregisterGameHookForPtr<GameInteractor::ShouldActorUpdate>(
             hooks->second.shouldUpdate);
+        GameInteractor::Instance->UnregisterGameHookForPtr<GameInteractor::ShouldActorDraw>(hooks->second.beforeDraw);
+        GameInteractor::Instance->UnregisterGameHookForPtr<GameInteractor::OnActorDraw>(hooks->second.afterDraw);
         auto entry = sPuppets.find(hooks->second.playerId);
         if (entry != sPuppets.end() && entry->second.actor == p) {
             entry->second.actor = nullptr;
@@ -339,12 +392,19 @@ bool Spawn(uint32_t playerId, Entry& entry, const PlayerSync::State& s) {
         }
     }
 
+    // The secondary init path skips this allocation; mask drawing binds it, as Kafei's does.
+    p->maskObjectSegment = ZeldaArena_Malloc(0x3800);
+
     entry.actor = p;
     entry.form = s.form;
     entry.modelGroup = 0xFF;
-    sActorHooks[actor] = { playerId,
-                           GameInteractor::Instance->RegisterGameHookForPtr<GameInteractor::ShouldActorUpdate>(
-                               reinterpret_cast<uintptr_t>(actor), OnShouldUpdate) };
+    const uintptr_t ptr = reinterpret_cast<uintptr_t>(actor);
+    sActorHooks[actor] = {
+        playerId,
+        GameInteractor::Instance->RegisterGameHookForPtr<GameInteractor::ShouldActorUpdate>(ptr, OnShouldUpdate),
+        GameInteractor::Instance->RegisterGameHookForPtr<GameInteractor::ShouldActorDraw>(ptr, BeforeDraw),
+        GameInteractor::Instance->RegisterGameHookForPtr<GameInteractor::OnActorDraw>(ptr, AfterDraw),
+    };
     SPDLOG_INFO("[Coop] Puppet created for player {}: form {} at ({:.0f}, {:.0f}, {:.0f}) in scene {}", playerId,
                 s.form, s.pos.x, s.pos.y, s.pos.z, play->sceneId);
     return true;
@@ -411,6 +471,11 @@ void RegisterPuppetHooks() {
 } // namespace
 
 void Frame() {
+    // A puppet draw that was skipped after BeforeDraw would leave the swap in place; never let it reach the game.
+    if (sDrawSwap.active) {
+        SPDLOG_WARN("[Coop] Puppet draw swap was not restored; restoring");
+        RestoreDrawSwap();
+    }
     if (!SessionActive() || !InGameplay()) {
         return;
     }
