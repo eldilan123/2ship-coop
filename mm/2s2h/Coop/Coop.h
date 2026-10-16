@@ -9,7 +9,17 @@
 
 // Coop session layer. Everything here runs on the game thread; the network thread lives in CoopNet and only
 // exchanges data with the game through queues that are drained once per frame (OnGameStateMainStart).
+#define CVAR_COOP_MODE "gCoop.Mode" // 0 = host, 1 = join
+#define CVAR_COOP_ADDRESS "gCoop.Address"
+#define CVAR_COOP_PORT "gCoop.Port"
+#define CVAR_COOP_NAME "gCoop.Name"
+#define CVAR_COOP_COLOR "gCoop.Color"
+
 namespace Coop {
+
+// Removes every --coop-* option from argv, so the ROM extractor never sees them, and remembers them to start a
+// session once the game is initialized. Returns the remaining arguments (pointers into argv).
+std::vector<char*> ConsumeArgs(int argc, char* argv[]);
 
 using JsonHandler = std::function<void(uint32_t from, const nlohmann::json& message)>;
 using BinaryHandler = std::function<void(uint32_t from, const std::vector<uint8_t>& payload)>;

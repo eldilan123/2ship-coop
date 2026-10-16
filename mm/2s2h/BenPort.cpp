@@ -961,8 +961,11 @@ bool VerifyArchiveVersion(ArchiveVersion version) {
 }
 
 extern "C" void InitOTR(int argc, char* argv[]) {
+    // Strip --coop-* options first: the extractor treats every other argument as a ROM path.
+    std::vector<char*> args = Coop::ConsumeArgs(argc, argv);
+
     OTRGlobals::Instance = new OTRGlobals();
-    OTRGlobals::Instance->RunExtract(argc, argv);
+    OTRGlobals::Instance->RunExtract(static_cast<int>(args.size()), args.data());
 
     OTRGlobals::Instance->Initialize();
 

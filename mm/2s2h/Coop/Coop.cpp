@@ -1,8 +1,13 @@
 #include "Coop.h"
 
+#include <chrono>
 #include <memory>
 #include <unordered_map>
 #include <spdlog/spdlog.h>
+#include <libultraship/bridge/consolevariablebridge.h>
+#include <ship/Context.h>
+#include <ship/window/Window.h>
+#include "CoopArgs.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -17,6 +22,8 @@ namespace {
 std::unique_ptr<CoopNet> sNet;
 std::unordered_map<std::string, JsonHandler> sJsonHandlers;
 std::unordered_map<uint8_t, BinaryHandler> sBinaryHandlers;
+std::chrono::steady_clock::time_point sInitTime;
+bool sQuitRequested = false;
 
 CoopNet& Net() {
     if (sNet == nullptr) {
@@ -32,6 +39,7 @@ bool StartSession(SessionConfig config) {
     }
     config.name = Protocol::SanitizeName(config.name);
     config.buildVersion = BuildVersion();
+    config.silenceAfterSeconds = GetLaunchOptions().silenceAfterSeconds;
     return Net().Start(config);
 }
 
@@ -61,18 +69,65 @@ void ProcessInbox() {
     }
 }
 
+// Test option --coop-quit-after: close the game through the same path as the Quit menu entry.
+void CheckQuitAfter() {
+    const int quitAfter = GetLaunchOptions().quitAfterSeconds;
+    if (quitAfter <= 0 || sQuitRequested ||
+        std::chrono::steady_clock::now() - sInitTime < std::chrono::seconds(quitAfter)) {
+        return;
+    }
+    sQuitRequested = true;
+    SPDLOG_INFO("[Coop] TEST: --coop-quit-after {} reached, closing the game", quitAfter);
+    Ship::Context::GetRawInstance()->GetWindow()->Close();
+}
+
 void OnFrame() {
     ProcessInbox();
+    CheckQuitAfter();
+}
+
+void StartFromLaunchOptions() {
+    const LaunchOptions& options = GetLaunchOptions();
+    for (const auto& warning : options.warnings) {
+        SPDLOG_WARN("[Coop] Command line: {}", warning);
+    }
+    if (!options.fakeVersion.empty()) {
+        SPDLOG_WARN("[Coop] TEST: pretending to be build '{}' (--coop-fake-version)", options.fakeVersion);
+    }
+    if (options.role == Role::None) {
+        return;
+    }
+
+    const uint16_t port = options.port.value_or(static_cast<uint16_t>(CVarGetInteger(CVAR_COOP_PORT, kDefaultPort)));
+    const std::string name = options.name.value_or(CVarGetString(CVAR_COOP_NAME, "Player"));
+    Protocol::Color color;
+    if (options.color.has_value()) {
+        color = *options.color;
+    } else {
+        const Color_RGB8 saved = CVarGetColor24(CVAR_COOP_COLOR, { 255, 255, 255 });
+        color = { saved.r, saved.g, saved.b };
+    }
+
+    if (options.role == Role::Host) {
+        SPDLOG_INFO("[Coop] Command line: starting as host on port {}", port);
+        StartHost(port, name, color);
+    } else {
+        SPDLOG_INFO("[Coop] Command line: joining {}:{}", options.address, port);
+        StartJoin(options.address, port, name, color);
+    }
 }
 
 void RegisterCoopHooks() {
+    sInitTime = std::chrono::steady_clock::now();
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainStart>(OnFrame);
+    StartFromLaunchOptions();
 }
 
 } // namespace
 
 std::string BuildVersion() {
-    return gGitCommitHash;
+    const std::string& fakeVersion = GetLaunchOptions().fakeVersion;
+    return fakeVersion.empty() ? std::string(gGitCommitHash) : fakeVersion;
 }
 
 bool StartHost(uint16_t port, const std::string& name, Protocol::Color color) {
