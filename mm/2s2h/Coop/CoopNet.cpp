@@ -1,3 +1,16 @@
+// The project's precompiled header already brings windows.h, which includes the old winsock.h; winsock2.h would
+// clash with it. winsock.h has everything needed here (setsockopt, getsockopt, TCP_NODELAY).
+#ifdef _WIN32
+#include <winsock.h>
+using CoopRawSocket = SOCKET;
+using socklen_t = int;
+#else
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+using CoopRawSocket = int;
+#endif
+
 #include "CoopNet.h"
 
 #include <algorithm>
@@ -9,12 +22,23 @@
 #define COOP_WARN(...) SPDLOG_WARN("[Coop] " __VA_ARGS__)
 
 // TODO (milestone 3): the network thread polls with SDLNet_CheckSockets every kPollIntervalMs, so an outgoing
-// message waits up to that long in the outbox before it is sent. That is fine for control traffic but not for
-// snapshots. Options: wake the thread when the outbox is filled, and make sure TCP_NODELAY is set on every socket
-// (SDL_net does not expose socket options, so check whether its client and accepted sockets already disable Nagle).
-// If neither gives acceptable latency, send the snapshot channel over UDP instead.
+// message can wait up to that long in the outbox. Player states (20 Hz) tolerate it thanks to the interpolation
+// delay; for snapshots of the world, wake the thread when the outbox is filled, or move that channel to UDP.
 // Also note that SDLNet_TCP_Open (client connect) and SDLNet_TCP_Send block, so a peer that stops reading or an
-// unreachable address can stall this thread; acceptable for milestone 0, revisit with non-blocking sockets.
+// unreachable address can stall this thread; acceptable for now, revisit with non-blocking sockets.
+
+// SDL_net does not expose socket options. SDLNet_TCP_Open already disables Nagle, but SDLNet_TCP_Accept does not, so
+// the host's connections would batch small packets. The raw socket is read from SDL_net's private struct, whose
+// layout is only valid for this exact version (SDLnetTCP.c in SDL_net 2.2.x).
+static_assert(SDL_NET_MAJOR_VERSION == 2 && SDL_NET_MINOR_VERSION == 2,
+              "Check struct _TCPsocket in SDLnetTCP.c before changing the SDL_net version");
+struct SdlNetTcpSocketMirror {
+    int ready;
+    CoopRawSocket channel;
+    IPaddress remoteAddress;
+    IPaddress localAddress;
+    int sflag;
+};
 
 namespace Coop {
 
@@ -55,6 +79,19 @@ std::string PeerAddress(TCPsocket socket) {
     const uint32_t host = SDLNet_Read32(&ip->host);
     return fmt::format("{}.{}.{}.{}:{}", (host >> 24) & 0xFF, (host >> 16) & 0xFF, (host >> 8) & 0xFF, host & 0xFF,
                        SDLNet_Read16(&ip->port));
+}
+
+// Turns Nagle off on `socket` and reads it back, so the log shows whether it really is off.
+bool EnableNoDelay(TCPsocket socket) {
+    const CoopRawSocket raw = reinterpret_cast<SdlNetTcpSocketMirror*>(socket)->channel;
+    int yes = 1;
+    setsockopt(raw, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof(yes));
+    int value = 0;
+    socklen_t length = sizeof(value);
+    if (getsockopt(raw, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char*>(&value), &length) != 0) {
+        return false;
+    }
+    return value != 0;
 }
 
 std::string DescribePlayers(const std::vector<PlayerInfo>& players, uint32_t localId) {
@@ -393,6 +430,8 @@ void CoopNet::RunHost() {
                     auto conn = std::make_unique<Connection>();
                     conn->socket = socket;
                     conn->peer = peer;
+                    COOP_INFO("TCP_NODELAY {} on the connection from {}",
+                              EnableNoDelay(socket) ? "enabled" : "NOT enabled", peer);
                     conn->openedAt = conn->lastReceived = conn->lastPingSent = now;
                     SDLNet_TCP_AddSocket(socketSet, socket);
                     COOP_INFO("Incoming connection from {}", peer);
@@ -591,6 +630,7 @@ void CoopNet::RunClient() {
         return;
     }
 
+    COOP_INFO("TCP_NODELAY {} on the connection to {}", EnableNoDelay(socket) ? "enabled" : "NOT enabled", target);
     SDLNet_SocketSet socketSet = SDLNet_AllocSocketSet(1);
     SDLNet_TCP_AddSocket(socketSet, socket);
 

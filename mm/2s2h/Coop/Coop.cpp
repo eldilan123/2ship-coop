@@ -9,6 +9,7 @@
 #include <ship/window/Window.h>
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopPlayerSync.h"
 #include "CoopSession.h"
 #include "CoopTest.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -88,6 +89,7 @@ void OnFrame() {
     ProcessInbox();
     SessionFrame();
     Clock::Frame();
+    PlayerSync::Frame();
     Test::Frame();
     CheckQuitAfter();
 }
