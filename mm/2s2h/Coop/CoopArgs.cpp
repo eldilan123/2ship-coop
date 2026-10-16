@@ -151,6 +151,56 @@ bool ParsePos(const char* text, LaunchOptions::TimedPos& out) {
     return true;
 }
 
+// Decimal, or hex with 0x.
+bool ParseNumber(const std::string& text, long min, long max, long& out) {
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        char* end = nullptr;
+        errno = 0;
+        const long value = std::strtol(text.c_str() + 2, &end, 16);
+        if (errno != 0 || *end != '\0' || end == text.c_str() + 2 || value < min || value > max) {
+            return false;
+        }
+        out = value;
+        return true;
+    }
+    return ParseInt(text.c_str(), min, max, out);
+}
+
+// "<actorId>,<params>@<seconds>"
+bool ParseSpawn(const char* text, LaunchOptions::TimedSpawn& out) {
+    const char* comma = text != nullptr ? std::strchr(text, ',') : nullptr;
+    const char* at = comma != nullptr ? std::strchr(comma, '@') : nullptr;
+    if (at == nullptr) {
+        return false;
+    }
+    long id = 0, params = 0, seconds = 0;
+    if (!ParseNumber(std::string(text, comma - text), 0, 0x7FFF, id) ||
+        !ParseNumber(std::string(comma + 1, at - comma - 1), 0, 0xFFFF, params) ||
+        !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+        return false;
+    }
+    out = { static_cast<int>(id), static_cast<int>(params), static_cast<int>(seconds) };
+    return true;
+}
+
+// "<netId|ultimo|last>@<seconds>"
+bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
+    const char* at = text != nullptr ? std::strchr(text, '@') : nullptr;
+    if (at == nullptr) {
+        return false;
+    }
+    const std::string which(text, at - text);
+    long netId = -1, seconds = 0;
+    if (which != "ultimo" && which != "last" && !ParseInt(which.c_str(), 1, 0xFFFF, netId)) {
+        return false;
+    }
+    if (!ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+        return false;
+    }
+    out = { static_cast<int>(netId), static_cast<int>(seconds) };
+    return true;
+}
+
 } // namespace
 
 const LaunchOptions& GetLaunchOptions() {
@@ -194,6 +244,28 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testHostRefuseExits = true;
         } else if (arg == "--coop-test-puppet-log") {
             options.testPuppetLog = true;
+        } else if (arg == "--coop-test-enemy-log") {
+            options.testEnemyLog = true;
+        } else if (arg == "--coop-test-keep-health") {
+            options.testKeepHealth = true;
+        } else if (arg == "--coop-test-spawn") {
+            const char* value = takeValue();
+            LaunchOptions::TimedSpawn timed;
+            if (value != nullptr && ParseSpawn(value, timed)) {
+                options.testSpawn.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-spawn: '{}' is not <actorId>,<params>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-kill") {
+            const char* value = takeValue();
+            LaunchOptions::TimedValue timed;
+            if (value != nullptr && ParseKill(value, timed)) {
+                options.testKill.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-kill: '{}' is not <netId|ultimo>@<seconds>", value));
+            }
         } else if (arg == "--coop-test-form") {
             const char* value = takeValue();
             LaunchOptions::TimedValue timed;
@@ -239,13 +311,14 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));
             }
         } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
-                   arg == "--coop-test-block-songs") {
+                   arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies") {
             const char* value = takeValue();
             int seconds = 0;
             if (value != nullptr && ParseSeconds(value, seconds)) {
-                (arg == "--coop-test-reset-cycle"  ? options.testResetCycleAt
-                 : arg == "--coop-test-force-save" ? options.testForceSaveAt
-                                                   : options.testBlockSongsAt) = seconds;
+                (arg == "--coop-test-reset-cycle"   ? options.testResetCycleAt
+                 : arg == "--coop-test-force-save"  ? options.testForceSaveAt
+                 : arg == "--coop-test-block-songs" ? options.testBlockSongsAt
+                                                    : options.testFuzzEnemiesAt) = seconds;
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not @<seconds>", arg, value));
             }

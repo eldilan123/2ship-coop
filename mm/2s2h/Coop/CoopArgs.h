@@ -51,6 +51,18 @@ struct LaunchOptions {
         int atSeconds;
     };
     std::vector<TimedPos> testPos;
+    bool testEnemyLog = false;   // Both: log the host's enemies and the client's enemy puppets
+    bool testKeepHealth = false; // Both: keep the local Link's health full (enemy tests run unattended)
+    // Host: spawn an enemy in front of Link at these seconds after reaching gameplay
+    struct TimedSpawn {
+        int actorId;
+        int params;
+        int atSeconds;
+    };
+    std::vector<TimedSpawn> testSpawn;
+    std::vector<TimedValue> testKill; // Host: value = netId, -1 = the newest enemy still alive
+    // Both: seconds after reaching gameplay to send malformed enemy channel messages to the other side
+    std::optional<int> testFuzzEnemiesAt;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };
