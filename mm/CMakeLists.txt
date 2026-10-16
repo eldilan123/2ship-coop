@@ -223,10 +223,9 @@ endif()
 find_package(SDL2)
 set(SDL2-INCLUDE ${SDL2_INCLUDE_DIRS})
 
-if (BUILD_CROWD_CONTROL)
-    find_package(SDL2_net)
-    set(SDL2-NET-INCLUDE ${SDL_NET_INCLUDE_DIRS})
-endif()
+# SDL2_net is always required: the coop module (2s2h/Coop) uses it for its TCP session.
+find_package(SDL2_net REQUIRED)
+set(SDL2-NET-INCLUDE ${SDL_NET_INCLUDE_DIRS})
 
 target_include_directories(${PROJECT_NAME} PRIVATE assets
 	${CMAKE_CURRENT_SOURCE_DIR}/include/
@@ -560,7 +559,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 		"glu32;"
 		"SDL2::SDL2;"
 		"SDL2::SDL2main;"
-        #"$<$<BOOL:${BUILD_CROWD_CONTROL}>:SDL2_net::SDL2_net-static>"
+		"SDL2_net::SDL2_net-static;"
 		"glfw;"
 		"winmm;"
 		"imm32;"
@@ -613,7 +612,7 @@ else()
         "Opus::opus"
         "Opusfile::Opusfile"
 		SDL2::SDL2
- #       "$<$<BOOL:${BUILD_CROWD_CONTROL}>:SDL2_net::SDL2_net>"
+		"$<IF:$<TARGET_EXISTS:SDL2_net::SDL2_net>,SDL2_net::SDL2_net,SDL2_net::SDL2_net-static>"
 		${CMAKE_DL_LIBS}
 		Threads::Threads
 	)
