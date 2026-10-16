@@ -4,6 +4,7 @@
 
 #include "2s2h/BenGui/Notification.h"
 #include "2s2h/SaveManager/SaveManager.h"
+#include "2s2h/Coop/CoopSaveGuard.h"
 #include <ship/utils/binarytools/BinaryReader.h>
 #include <string>
 #include <spdlog/spdlog.h>
@@ -642,6 +643,9 @@ void BinarySaveConverter_ReadBufferToSave(Legacy_SaveContext* saveContext, std::
 }
 
 bool BinarySaveConverter_HandleFileDropped(char* filePath) {
+    if (Coop_BlocksSave("import dropped binary save file")) {
+        return true;
+    }
     try {
         std::ifstream fileStream(filePath, std::ios::binary | std::ios::ate);
 

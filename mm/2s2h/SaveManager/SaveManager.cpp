@@ -7,6 +7,7 @@
 #include "BenJsonConversions.hpp"
 #include "BenPort.h"
 #include "2s2h/BenGui/Notification.h"
+#include "2s2h/Coop/CoopSaveGuard.h"
 #include <ship/window/Window.h>
 #include <libultraship/bridge/consolevariablebridge.h>
 
@@ -109,6 +110,9 @@ int SaveManager_MigrateSave(nlohmann::json& j) {
 }
 
 void SaveManager_WriteSaveFile(const std::filesystem::path& fileName, nlohmann::json j) {
+    if (Coop_BlocksSave(("write " + fileName.string()).c_str())) {
+        return;
+    }
     const std::filesystem::path filePath = savesFolderPath / fileName;
 
     if (!std::filesystem::exists(savesFolderPath)) {
@@ -123,6 +127,9 @@ void SaveManager_WriteSaveFile(const std::filesystem::path& fileName, nlohmann::
 }
 
 void SaveManager_DeleteSaveFile(const std::filesystem::path& fileName) {
+    if (Coop_BlocksSave(("delete " + fileName.string()).c_str())) {
+        return;
+    }
     const std::filesystem::path filePath = savesFolderPath / fileName;
 
     try {
@@ -179,6 +186,9 @@ void SaveManager_PersistSariaHintsAvailable() {
 }
 
 void SaveManager_MoveInvalidSaveFile(const std::filesystem::path& fileName, const std::string& message) {
+    if (Coop_BlocksSave(("rename invalid " + fileName.string()).c_str())) {
+        return;
+    }
     const std::filesystem::path filePath = savesFolderPath / fileName;
     const std::filesystem::path backupFilePath =
         savesFolderPath / (fileName.stem().string() + "_invalid_" + std::to_string(std::time(nullptr)) + ".json");
@@ -278,6 +288,9 @@ std::string SaveManager_GetFileNameFromFlashSave(FlashSave flashSave) {
 }
 
 bool SaveManager_HandleFileDropped(char* filePath) {
+    if (Coop_BlocksSave("import dropped save file")) {
+        return true;
+    }
     try {
         std::ifstream fileStream(filePath);
 
@@ -391,6 +404,9 @@ bool SaveManager_MigrateGlobalOptions(const std::filesystem::path& fileName, Sav
 extern "C" void SaveManager_SysFlashrom_WriteData(u8* saveBuffer, u32 pageNum, u32 pageCount) {
     FlashSave flashSave = SaveManager_GetFlashSaveFromPages(pageNum, pageCount);
     std::string fileName = SaveManager_GetFileNameFromFlashSave(flashSave);
+    if (flashSave != FLASH_SAVE_UNAVAILABLE && Coop_BlocksSave(("game save to " + fileName).c_str())) {
+        return;
+    }
 
     bool isBackup = false;
 
