@@ -147,6 +147,7 @@ bool CoopNet::Start(const SessionConfig& config) {
         std::lock_guard<std::mutex> lock(mSnapshotMutex);
         mSnapshot = {};
         mSnapshot.role = config.role;
+        mSnapshot.config = config;
         mSnapshot.state = SessionState::Connecting;
     }
 

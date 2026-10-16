@@ -54,6 +54,7 @@ struct SessionConfig {
 
 struct SessionSnapshot {
     Role role = Role::None;
+    SessionConfig config; // Settings the current (or last) session was started with
     SessionState state = SessionState::Idle;
     std::string message;
     uint32_t localId = 0;

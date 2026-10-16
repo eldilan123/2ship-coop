@@ -57,8 +57,22 @@ void CoopWindow::InitElement() {
 void CoopWindow::DrawElement() {
     const Coop::SessionSnapshot snapshot = Coop::GetSnapshot();
     const bool running = Coop::IsRunning();
-    const int mode = CVarGetInteger(CVAR_COOP_MODE, 0);
-    int port = CVarGetInteger(CVAR_COOP_PORT, Coop::kDefaultPort);
+
+    // While a session runs, show the settings it was really started with (e.g. from --coop-* options), which can
+    // differ from the saved ones. The fields are read-only then, so the CVar branches below never fire.
+    const Coop::SessionConfig& session = snapshot.config;
+    const int mode = running ? (session.role == Coop::Role::Client ? 1 : 0) : CVarGetInteger(CVAR_COOP_MODE, 0);
+    int port = running ? session.port : CVarGetInteger(CVAR_COOP_PORT, Coop::kDefaultPort);
+    char sessionAddress[sizeof(mAddress)] = {};
+    char sessionName[sizeof(mName)] = {};
+    char* address = mAddress;
+    char* name = mName;
+    if (running) {
+        strncpy(sessionAddress, session.address.c_str(), sizeof(sessionAddress) - 1);
+        strncpy(sessionName, session.name.c_str(), sizeof(sessionName) - 1);
+        address = sessionAddress;
+        name = sessionName;
+    }
 
     ImGui::BeginDisabled(running);
     if (ImGui::RadioButton("Host", mode == 0)) {
@@ -70,7 +84,7 @@ void CoopWindow::DrawElement() {
         CVarSetInteger(CVAR_COOP_MODE, 1);
         SaveCVars();
     }
-    if (mode == 1 && ImGui::InputText("Address", mAddress, sizeof(mAddress))) {
+    if (mode == 1 && ImGui::InputText("Address", address, sizeof(mAddress))) {
         CVarSetString(CVAR_COOP_ADDRESS, mAddress);
         SaveCVars();
     }
@@ -78,11 +92,11 @@ void CoopWindow::DrawElement() {
         CVarSetInteger(CVAR_COOP_PORT, std::clamp(port, 1, 65535));
         SaveCVars();
     }
-    if (ImGui::InputText("Name", mName, sizeof(mName))) {
+    if (ImGui::InputText("Name", name, sizeof(mName))) {
         CVarSetString(CVAR_COOP_NAME, mName);
         SaveCVars();
     }
-    const Coop::Protocol::Color color = ConfiguredColor();
+    const Coop::Protocol::Color color = running ? session.color : ConfiguredColor();
     float colorEdit[3] = { color.r / 255.0f, color.g / 255.0f, color.b / 255.0f };
     if (ImGui::ColorEdit3("Color", colorEdit)) {
         CVarSetColor24(CVAR_COOP_COLOR, { static_cast<uint8_t>(colorEdit[0] * 255.0f + 0.5f),
@@ -106,7 +120,7 @@ void CoopWindow::DrawElement() {
     }
 
     ImGui::Separator();
-    ImGui::Text("Build: %s", Coop::BuildVersion().c_str());
+    ImGui::Text("Build: %s  |  Protocol: %d", Coop::BuildVersion().c_str(), Coop::ProtocolVersion());
     ImGui::TextColored(StateColor(snapshot.state), "Status: %s", Coop::SessionStateName(snapshot.state));
     if (!snapshot.message.empty()) {
         ImGui::PushTextWrapPos(0.0f);
