@@ -10,6 +10,8 @@ namespace Coop {
 namespace {
 
 std::atomic<bool> sClientInSession = false;
+// Test only: blocks the host's own writes while a --coop-test-* action emulates a save point.
+const char* sTestSuppression = nullptr;
 
 // The VB overrides are (re)registered every time the flag changes, so they run after the port's own handlers for the
 // same flags (registered at startup) and win while the client is in a session.
@@ -35,6 +37,10 @@ void SetClientInSession(bool inSession, const char* why) {
     UpdateSaveVanillaBehaviors();
 }
 
+void SetTestSaveSuppression(const char* why) {
+    sTestSuppression = why;
+}
+
 } // namespace Coop
 
 extern "C" bool Coop_IsClientInSession(void) {
@@ -42,6 +48,10 @@ extern "C" bool Coop_IsClientInSession(void) {
 }
 
 extern "C" bool Coop_BlocksSave(const char* reason) {
+    if (Coop::sTestSuppression != nullptr) {
+        SPDLOG_WARN("[Coop] Save blocked ({}): {}", reason, Coop::sTestSuppression);
+        return true;
+    }
     if (!Coop::sClientInSession.load()) {
         return false;
     }

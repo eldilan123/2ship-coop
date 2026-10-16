@@ -36,6 +36,8 @@ struct LaunchOptions {
     std::optional<int> testResetCycleAt;
     // Client: seconds after entering the session to force every save path
     std::optional<int> testForceSaveAt;
+    // Client: seconds after entering the session to simulate answering "Yes" to the Song of Time and an owl statue
+    std::optional<int> testBlockSongsAt;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

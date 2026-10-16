@@ -7,6 +7,7 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -20,6 +21,10 @@ extern "C" {
 extern FileSelectState* gFileSelectState;
 }
 
+#include "2s2h/SaveManager/SaveManager.h"
+void SaveManager_DeleteSaveFile(const std::filesystem::path& fileName);
+void SaveManager_MoveInvalidSaveFile(const std::filesystem::path& fileName, const std::string& message);
+
 namespace Coop::Test {
 
 namespace {
@@ -29,9 +34,13 @@ using SteadyClock = std::chrono::steady_clock;
 bool sBootHandled = false;
 bool sAutoloadDone = false;
 int sFileSelectFrames = 0;
-std::optional<SteadyClock::time_point> sGameplayStart; // First time the host reached gameplay
+// First time this game reached gameplay (for a client: entering the session)
+std::optional<SteadyClock::time_point> sGameplayStart;
 size_t sNextGoto = 0;
 size_t sNextTimeJump = 0;
+bool sResetCycleDone = false;
+bool sForceSaveDone = false;
+int sBlockSongsStep = 0;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -145,8 +154,100 @@ void UpdateTimeJump() {
     Clock::JumpTo(newTime, gSaveContext.save.day);
 }
 
+// --coop-test-reset-cycle: does what the Song of Time does once the player answers "Yes" (Sram_SaveEndOfCycle, then
+// the transition Player starts for OCARINA_MODE_APPLY_SOT), except that the host's save is not written to disk.
+void UpdateResetCycle() {
+    const std::optional<int>& at = GetLaunchOptions().testResetCycleAt;
+    if (!at.has_value() || sResetCycleDone || GameplaySeconds() < *at || !NoTransitionInProgress()) {
+        return;
+    }
+    sResetCycleDone = true;
+    SPDLOG_INFO("[Coop] TEST: host resets the cycle like the Song of Time (its save file is not written)");
+    SetTestSaveSuppression("test reset-cycle: the host's save file is not written");
+    Sram_SaveEndOfCycle(gPlayState);
+    SetTestSaveSuppression(nullptr);
+    gPlayState->nextEntrance =
+        gSaveContext.save.saveInfo.playerData.threeDayResetCount == 1 ? ENTRANCE(CUTSCENE, 1) : ENTRANCE(CUTSCENE, 0);
+    gSaveContext.nextCutsceneIndex = 0xFFF7;
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+}
+
+// --coop-test-force-save: runs every save path on a client in a session. Each one must end in "[Coop] Save blocked"
+// and probar.ps1 checks that the client's save files keep the same hash.
+void ForceEverySavePath() {
+    SPDLOG_INFO("[Coop] TEST: forcing every save path on the client");
+    SramContext* sramCtx = &gPlayState->sramCtx;
+    const s32 fileNum = gSaveContext.fileNum;
+    const u8 isFirstCycle = gSaveContext.save.isFirstCycle;
+
+    SPDLOG_INFO("[Coop] TEST: path 1/9: Song of Time, game over and moon crash save (default pages)");
+    func_8014546C(sramCtx);
+    Sram_SetFlashPagesDefault(sramCtx, gFlashSaveStartPages[fileNum * FLASH_SAVE_MAIN_MULTIPLIER],
+                              gFlashSpecialSaveNumPages[fileNum * FLASH_SAVE_MAIN_MULTIPLIER]);
+    Sram_StartWriteToFlashDefault(sramCtx);
+
+    SPDLOG_INFO("[Coop] TEST: path 2/9: owl statue, autosave and pause save (owl pages)");
+    Sram_SetFlashPagesOwlSave(sramCtx, gFlashOwlSaveStartPages[fileNum * FLASH_SAVE_MAIN_MULTIPLIER],
+                              gFlashOwlSaveNumPages[fileNum * FLASH_SAVE_MAIN_MULTIPLIER]);
+    Sram_StartWriteToFlashOwlSave(sramCtx);
+
+    SPDLOG_INFO("[Coop] TEST: path 3/9: owl save deletion (file load, end of cycle, moon crash)");
+    func_80147314(sramCtx, fileNum);
+
+    SPDLOG_INFO("[Coop] TEST: path 4/9: special save when entering Clock Town (intro and Tatl skips)");
+    Sram_SaveSpecialEnterClockTown(gPlayState);
+    gSaveContext.save.isFirstCycle = isFirstCycle; // That routine also marks the first cycle in memory
+
+    SPDLOG_INFO("[Coop] TEST: path 5/9: dropped JSON save import");
+    char fakeJson[] = "coop-test-dropped-save.json";
+    SaveManager_HandleFileDropped(fakeJson);
+
+    SPDLOG_INFO("[Coop] TEST: path 6/9: dropped binary save import");
+    char fakeBinary[] = "coop-test-dropped-save.sav";
+    BinarySaveConverter_HandleFileDropped(fakeBinary);
+
+    SPDLOG_INFO("[Coop] TEST: path 7/9: randomizer Saria hint persistence and direct save file write");
+    SaveManager_PersistSariaHintsAvailable();
+    SaveManager_WriteSaveFile("file1.json", nlohmann::json::object());
+
+    SPDLOG_INFO("[Coop] TEST: path 8/9: delete file (erase, delete on death)");
+    SaveManager_DeleteSaveFile("file1.json");
+
+    SPDLOG_INFO("[Coop] TEST: path 9/9: rename of an invalid save file");
+    SaveManager_MoveInvalidSaveFile("file1.json", "coop test");
+    SPDLOG_INFO("[Coop] TEST: forced every save path");
+}
+
+void UpdateForceSave() {
+    const std::optional<int>& at = GetLaunchOptions().testForceSaveAt;
+    if (at.has_value() && !sForceSaveDone && IsClientInSession() && GameplaySeconds() >= *at &&
+        NoTransitionInProgress()) {
+        sForceSaveDone = true;
+        ForceEverySavePath();
+    }
+}
+
+// --coop-test-block-songs: leaves msgMode exactly as Message_Update does when the player answers "Yes" to the Song of
+// Time and then to an owl statue. It runs at the end of the frame, so the coop frame hook sees it first next frame.
+void OnGameStateMainFinish() {
+    const std::optional<int>& at = GetLaunchOptions().testBlockSongsAt;
+    if (!at.has_value() || sBlockSongsStep >= 2 || !IsClientInSession() || !InGameplay() ||
+        GameplaySeconds() < *at + sBlockSongsStep * 2) {
+        return;
+    }
+    if (sBlockSongsStep == 0) {
+        SPDLOG_INFO("[Coop] TEST: client answers \"Yes\" to the Song of Time");
+        gPlayState->msgCtx.msgMode = MSGMODE_NEW_CYCLE_0;
+    } else {
+        SPDLOG_INFO("[Coop] TEST: client answers \"Yes\" to an owl statue save");
+        gPlayState->msgCtx.msgMode = MSGMODE_OWL_SAVE_0;
+    }
+    sBlockSongsStep++;
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
 }
 
 } // namespace
@@ -162,6 +263,9 @@ void Frame() {
     if (IsHosting()) {
         UpdateGoto();
         UpdateTimeJump();
+        UpdateResetCycle();
+    } else {
+        UpdateForceSave();
     }
 }
 

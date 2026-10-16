@@ -171,11 +171,14 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.warnings.push_back(
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));
             }
-        } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save") {
+        } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
+                   arg == "--coop-test-block-songs") {
             const char* value = takeValue();
             int seconds = 0;
             if (value != nullptr && ParseSeconds(value, seconds)) {
-                (arg == "--coop-test-reset-cycle" ? options.testResetCycleAt : options.testForceSaveAt) = seconds;
+                (arg == "--coop-test-reset-cycle"  ? options.testResetCycleAt
+                 : arg == "--coop-test-force-save" ? options.testForceSaveAt
+                                                   : options.testBlockSongsAt) = seconds;
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not @<seconds>", arg, value));
             }

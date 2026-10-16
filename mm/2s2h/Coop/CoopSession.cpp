@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <optional>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
@@ -54,6 +55,7 @@ PendingDestination sPending = {};
 // MARK: - Host state
 
 uint32_t sNextSnapshotSeq = 1;
+std::optional<u16> sHostResetCount; // threeDayResetCount when the last scene snapshot was sent
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -218,6 +220,29 @@ void ClientFollowHost(const PendingDestination& dest) {
                 gPlayState->sceneId, dest.sceneId, entrance, dest.sceneLayer);
 }
 
+// Adjustment 1: the Song of Time and owl statues would start the client's own cycle reset or save and split it from
+// the host. They are caught at the start of the frame, before Message_Update acts on them, and cancelled the same way
+// answering "No" does.
+void ClientBlockHostOnlyActions() {
+    MessageContext* msgCtx = &gPlayState->msgCtx;
+    const char* what = nullptr;
+    if (msgCtx->msgMode == MSGMODE_NEW_CYCLE_0) {
+        what = "Song of Time";
+        msgCtx->ocarinaMode = OCARINA_MODE_END;
+    } else if (msgCtx->msgMode == MSGMODE_OWL_SAVE_0) {
+        what = "Owl statue save";
+    } else {
+        return;
+    }
+    if (msgCtx->msgLength != 0) {
+        Message_CloseTextbox(gPlayState);
+    } else {
+        msgCtx->msgMode = MSGMODE_NONE;
+    }
+    SPDLOG_WARN("[Coop] Blocked on the client: {}. Only the host can reset the cycle or save.", what);
+    Notify(fmt::format("Coop: {} is disabled for players who joined. Only the host can do it.", what));
+}
+
 void ClientUpdateSceneFollow() {
     if (!sPending.active || !InGameplay()) {
         return;
@@ -238,7 +263,11 @@ void ClientUpdateSceneFollow() {
 
 void OnSceneInit(s8 sceneId, s8 spawnNum) {
     if (IsHosting() && InGameplay()) {
-        HostSendSnapshot(Snapshot::Reason::Scene, kBroadcast);
+        // The Song of Time (or any cycle reset) ends in a new scene with a higher reset count.
+        const u16 resetCount = gSaveContext.save.saveInfo.playerData.threeDayResetCount;
+        const bool cycleReset = sHostResetCount.has_value() && resetCount != *sHostResetCount;
+        sHostResetCount = resetCount;
+        HostSendSnapshot(cycleReset ? Snapshot::Reason::Cycle : Snapshot::Reason::Scene, kBroadcast);
         return;
     }
     if (sStage == ClientStage::Entering && InGameplay()) {
@@ -359,6 +388,9 @@ void SessionFrame() {
         return;
     }
     if (sStage == ClientStage::InSession) {
+        if (InGameplay()) {
+            ClientBlockHostOnlyActions();
+        }
         ClientUpdateSceneFollow();
     }
 

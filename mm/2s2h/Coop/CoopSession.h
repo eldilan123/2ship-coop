@@ -9,6 +9,8 @@ namespace Coop {
 
 // Turns the "client in a coop session" flag on or off. While it is on, Coop_BlocksSave() blocks every save write.
 void SetClientInSession(bool inSession, const char* why);
+// Test only: while `why` is not null every save write is blocked too (also on the host), logging `why`.
+void SetTestSaveSuppression(const char* why);
 
 // Client: asks the host for a snapshot and enters gameplay with it, without choosing a save slot.
 void RequestEnterSession();

@@ -7,6 +7,7 @@
 
 #include "2s2h/Enhancements/Saving/SavingEnhancements.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
+#include "2s2h/Coop/CoopSaveGuard.h"
 #include <libultraship/bridge/consolevariablebridge.h>
 
 void Sram_SyncWriteToFlash(SramContext* sramCtx, s32 curPage, s32 numPages);
@@ -1262,6 +1263,11 @@ void Sram_InitDebugSave(void) {
 void Sram_ResetSaveFromMoonCrash(SramContext* sramCtx) {
     s32 i;
     s32 cutsceneIndex = gSaveContext.save.cutsceneIndex;
+
+    // 2S2H [Coop] A coop client must not reload its own file from disk; it gets the reset cycle from the host.
+    if (Coop_BlocksSave("moon crash: reload of the client's own save file")) {
+        return;
+    }
 
     memset(sramCtx->saveBuf, 0, SAVE_BUFFER_SIZE);
 
