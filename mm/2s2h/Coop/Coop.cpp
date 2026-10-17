@@ -76,6 +76,43 @@ void ProcessInbox() {
 }
 
 // Test option --coop-quit-after: close the game through the same path as the Quit menu entry.
+// Every 10 s while connected, both roles: round trip, the longest wait between two messages of the player (3) and
+// enemy (4) channels, bytes per second per channel and dropped messages. Explained in NOTAS-prueba.md.
+void LogNetStats() {
+    static std::chrono::steady_clock::time_point sLast = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (!sNet || now - sLast < std::chrono::seconds(10)) {
+        return;
+    }
+    sLast = now;
+    const NetStats stats = sNet->TakeStats();
+    if ((!IsHosting() && !IsConnectedClient()) || stats.seconds <= 0.0) {
+        return;
+    }
+    auto perSecond = [&](uint64_t bytes) { return static_cast<uint64_t>(bytes / stats.seconds); };
+    std::string in, out;
+    for (size_t channel = 0; channel < kStatsChannels; channel++) {
+        if (stats.inBytes[channel] > 0) {
+            in += fmt::format("{}{} {}", in.empty() ? "" : ", ",
+                              channel == 0 ? std::string("json") : fmt::format("ch{}", channel),
+                              perSecond(stats.inBytes[channel]));
+        }
+        if (stats.outBytes[channel] > 0) {
+            out += fmt::format("{}{} {}", out.empty() ? "" : ", ",
+                               channel == 0 ? std::string("json") : fmt::format("ch{}", channel),
+                               perSecond(stats.outBytes[channel]));
+        }
+    }
+    const int64_t rttAvg = stats.rttCount > 0 ? stats.rttSumMs / stats.rttCount : -1;
+    // Clients stream their Link (3); the host streams Links (3) and enemies (4). The host only receives requests on 4.
+    const std::string gaps = IsHosting() ? fmt::format("ch3 {} ms", stats.maxGapMs[3])
+                                         : fmt::format("ch3 {} ms ch4 {} ms", stats.maxGapMs[3], stats.maxGapMs[4]);
+    SPDLOG_INFO("[Coop] net-stats: rtt avg {} ms max {} ms ({} pings); max gap {}; in B/s: {}; out B/s: {}; "
+                "dropped {}",
+                rttAvg, stats.rttMaxMs, stats.rttCount, gaps, in.empty() ? "-" : in, out.empty() ? "-" : out,
+                stats.dropped);
+}
+
 void CheckQuitAfter() {
     const int quitAfter = GetLaunchOptions().quitAfterSeconds;
     if (quitAfter <= 0 || sQuitRequested ||
@@ -95,6 +132,7 @@ void OnFrame() {
     Puppet::Frame();
     Enemies::Frame();
     Test::Frame();
+    LogNetStats();
     CheckQuitAfter();
 }
 
@@ -212,6 +250,12 @@ void SendBinary(uint32_t target, uint8_t channel, const void* data, size_t size)
 
 void RegisterJsonHandler(const std::string& type, JsonHandler handler) {
     sJsonHandlers[type] = std::move(handler);
+}
+
+void NoteDroppedMessage() {
+    if (sNet) {
+        sNet->NoteDropped();
+    }
 }
 
 void RegisterBinaryHandler(uint8_t channel, BinaryHandler handler) {

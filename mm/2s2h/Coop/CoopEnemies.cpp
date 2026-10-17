@@ -935,6 +935,7 @@ bool RecordValid(const SpawnRecord& r, const char*& why) {
 
 void Drop(const char* what, const char* why) {
     SPDLOG_WARN("[Coop] Dropping enemy {}: {}", what, why);
+    NoteDroppedMessage();
 }
 
 void ClientOnManifest(Reader& r) {

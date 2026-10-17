@@ -50,6 +50,8 @@ void SendBinary(uint32_t target, uint8_t channel, const void* data, size_t size)
 // Handlers run on the game thread, from the per-frame hook.
 void RegisterJsonHandler(const std::string& type, JsonHandler handler);
 void RegisterBinaryHandler(uint8_t channel, BinaryHandler handler);
+// A received message failed its checks and was thrown away (counted in the [Coop] net-stats line).
+void NoteDroppedMessage();
 
 } // namespace Coop
 

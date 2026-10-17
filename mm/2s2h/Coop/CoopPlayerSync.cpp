@@ -215,6 +215,7 @@ void OnPlayerState(uint32_t from, const std::vector<uint8_t>& bytes) {
     if (bytes.size() != sizeof(State)) {
         SPDLOG_WARN("[Coop] Dropping player state of {} bytes from {} (expected {})", bytes.size(), from,
                     sizeof(State));
+        NoteDroppedMessage();
         return;
     }
     State s;
@@ -222,6 +223,7 @@ void OnPlayerState(uint32_t from, const std::vector<uint8_t>& bytes) {
     const char* why = nullptr;
     if (!Validate(s, why)) {
         SPDLOG_WARN("[Coop] Dropping player state from {}: {}", from, why);
+        NoteDroppedMessage();
         return;
     }
 

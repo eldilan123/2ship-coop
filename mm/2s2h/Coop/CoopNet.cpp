@@ -238,6 +238,56 @@ std::vector<AppMessage> CoopNet::TakeInbox() {
     return messages;
 }
 
+NetStats CoopNet::TakeStats() {
+    std::lock_guard<std::mutex> lock(mStatsMutex);
+    const Clock::time_point now = Clock::now();
+    NetStats stats = mStats;
+    stats.seconds = std::chrono::duration<double>(now - mStatsSince).count();
+    mStats = NetStats{};
+    mStatsSince = now;
+    return stats;
+}
+
+void CoopNet::NoteDropped() {
+    std::lock_guard<std::mutex> lock(mStatsMutex);
+    mStats.dropped++;
+}
+
+void CoopNet::CountReceived(uint32_t peer, const Protocol::Frame& frame) {
+    const bool binary = frame.kind == Protocol::Frame::Kind::Binary;
+    const size_t channel = binary ? std::min<size_t>(frame.channel, kStatsChannels - 1) : 0;
+    const size_t bytes = binary ? frame.payload.size() + Protocol::kBinaryHeaderSize : frame.json.dump().size() + 1;
+    const Clock::time_point now = Clock::now();
+    std::lock_guard<std::mutex> lock(mStatsMutex);
+    mStats.inBytes[channel] += bytes;
+    if (binary) {
+        const uint64_t key = (static_cast<uint64_t>(peer) << 8) | channel;
+        auto it = mLastArrival.find(key);
+        if (it != mLastArrival.end()) {
+            const int64_t gap = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count();
+            mStats.maxGapMs[channel] = std::max(mStats.maxGapMs[channel], gap);
+            it->second = now;
+        } else {
+            mLastArrival.emplace(key, now);
+        }
+    }
+}
+
+void CoopNet::CountSent(const std::string& bytes) {
+    const bool binary =
+        bytes.size() >= Protocol::kBinaryHeaderSize && static_cast<uint8_t>(bytes[0]) == Protocol::kBinaryMarker;
+    const size_t channel = binary ? std::min<size_t>(static_cast<uint8_t>(bytes[1]), kStatsChannels - 1) : 0;
+    std::lock_guard<std::mutex> lock(mStatsMutex);
+    mStats.outBytes[channel] += bytes.size();
+}
+
+void CoopNet::CountRtt(int32_t rttMs) {
+    std::lock_guard<std::mutex> lock(mStatsMutex);
+    mStats.rttCount++;
+    mStats.rttSumMs += rttMs;
+    mStats.rttMaxMs = std::max(mStats.rttMaxMs, rttMs);
+}
+
 std::vector<CoopNet::Outgoing> CoopNet::TakeOutbox() {
     std::vector<Outgoing> messages;
     std::lock_guard<std::mutex> lock(mOutboxMutex);
@@ -249,6 +299,7 @@ void CoopNet::PushInbox(uint32_t from, Protocol::Frame&& frame) {
     std::lock_guard<std::mutex> lock(mInboxMutex);
     if (mInbox.size() >= kMaxInboxMessages) {
         COOP_WARN("Inbox full ({} messages), dropping a message from player {}", mInbox.size(), from);
+        NoteDropped();
         return;
     }
     mInbox.push_back({ from, std::move(frame) });
@@ -325,7 +376,9 @@ void CoopNet::SendRaw(Connection& conn, const std::string& bytes) {
     if (SDLNet_TCP_Send(conn.socket, bytes.data(), length) < length) {
         conn.closed = true;
         conn.closeReason = "send failed";
+        return;
     }
+    CountSent(bytes);
 }
 
 void CoopNet::SendControl(Connection& conn, const nlohmann::json& message) {
@@ -348,6 +401,7 @@ bool CoopNet::HandleHeartbeatMessage(Connection& conn, const Protocol::Frame& fr
         const int64_t sentAt = Protocol::GetInt(frame.json, "t", -1);
         if (sentAt >= 0 && sentAt <= now) {
             conn.rttMs = static_cast<int32_t>(std::min<int64_t>(now - sentAt, INT32_MAX));
+            CountRtt(conn.rttMs);
             if (!conn.loggedFirstPong) {
                 conn.loggedFirstPong = true;
                 COOP_INFO("Heartbeat established with {}: round trip {} ms", conn.peer, conn.rttMs);
@@ -450,6 +504,7 @@ void CoopNet::RunHost() {
             std::vector<Protocol::Frame> frames;
             ReadFrom(*conn, frames);
             for (auto& frame : frames) {
+                CountReceived(conn->playerId, frame);
                 if (conn->closed) {
                     break;
                 }
@@ -664,6 +719,7 @@ void CoopNet::RunClient() {
             std::vector<Protocol::Frame> frames;
             ReadFrom(host, frames);
             for (auto& frame : frames) {
+                CountReceived(kHostPlayerId, frame);
                 if (host.closed) {
                     break;
                 }

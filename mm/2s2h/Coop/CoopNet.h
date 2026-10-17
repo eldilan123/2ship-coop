@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "CoopProtocol.h"
 
@@ -61,6 +62,21 @@ struct SessionSnapshot {
     std::vector<PlayerInfo> players;
 };
 
+// Traffic counters for the [Coop] net-stats line, since the previous TakeStats(). Index 0 is JSON (control and
+// application messages), 1..kStatsChannels-1 the binary channels.
+constexpr size_t kStatsChannels = 8;
+struct NetStats {
+    double seconds = 0.0;
+    uint32_t rttCount = 0; // Pongs received
+    int64_t rttSumMs = 0;
+    int32_t rttMaxMs = 0;
+    uint64_t inBytes[kStatsChannels] = {};
+    uint64_t outBytes[kStatsChannels] = {};
+    // Longest wait between two consecutive messages of the same channel from the same peer (network thread time)
+    int64_t maxGapMs[kStatsChannels] = {};
+    uint64_t dropped = 0; // Messages received and thrown away (inbox full, failed checks on the game thread)
+};
+
 // A non-control message for the game thread. Control traffic (handshake, ping/pong, player list, bye) never
 // reaches this queue: it is handled entirely on the network thread.
 struct AppMessage {
@@ -88,6 +104,10 @@ class CoopNet {
     void SendJson(uint32_t target, const nlohmann::json& message);
     void SendBinary(uint32_t target, uint8_t channel, const void* data, size_t size);
     std::vector<AppMessage> TakeInbox();
+    // Counters since the previous call (then reset). Any thread.
+    NetStats TakeStats();
+    // A received message was thrown away by the game thread (failed its checks).
+    void NoteDropped();
 
   private:
     using Clock = std::chrono::steady_clock;
@@ -110,6 +130,14 @@ class CoopNet {
 
     std::mutex mInboxMutex;
     std::vector<AppMessage> mInbox;
+
+    std::mutex mStatsMutex;
+    NetStats mStats;
+    Clock::time_point mStatsSince = Clock::now();
+    std::unordered_map<uint64_t, Clock::time_point> mLastArrival; // (peer << 8 | channel)
+    void CountReceived(uint32_t peer, const Protocol::Frame& frame);
+    void CountSent(const std::string& bytes);
+    void CountRtt(int32_t rttMs);
 
     // Network thread state
     Clock::time_point mSessionStart;
