@@ -63,6 +63,13 @@ struct LaunchOptions {
     std::vector<TimedValue> testKill; // Host: value = netId, -1 = the newest enemy still alive
     // Both: seconds after reaching gameplay to send malformed enemy channel messages to the other side
     std::optional<int> testFuzzEnemiesAt;
+    // Host: from testSweepAt on, every kSweepStepSeconds remove the previous test enemy and spawn the next one
+    struct SweepEntry {
+        int actorId;
+        int params;
+    };
+    std::vector<SweepEntry> testSweep;
+    int testSweepAt = 0;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

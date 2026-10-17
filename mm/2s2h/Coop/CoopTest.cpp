@@ -2,6 +2,7 @@
 // keyboard: probar.ps1 starts the games with these options and checks the "[Coop]" log lines.
 #include "CoopTest.h"
 
+#include <algorithm>
 #include <chrono>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
@@ -50,6 +51,8 @@ int sLastSpawnSecond = -1;
 int sSpawnIndex = 0;
 size_t sNextKill = 0;
 bool sFuzzDone = false;
+int sSweepDone = -1;
+constexpr int kSweepStepSeconds = 5;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -324,6 +327,20 @@ void UpdateEnemyTests() {
         }
         while (sNextKill < options.testKill.size() && seconds >= options.testKill[sNextKill].atSeconds) {
             Enemies::TestKill(options.testKill[sNextKill++].value);
+        }
+    }
+    if (IsHosting() && !options.testSweep.empty() && NoTransitionInProgress() && seconds >= options.testSweepAt) {
+        const int total = static_cast<int>(options.testSweep.size());
+        const int step = (seconds - options.testSweepAt) / kSweepStepSeconds;
+        if (step > sSweepDone && sSweepDone < total) {
+            sSweepDone = std::min(step, total);
+            if (sSweepDone < total) {
+                const LaunchOptions::SweepEntry& entry = options.testSweep[sSweepDone];
+                Enemies::TestSweepStep(sSweepDone, total, static_cast<int16_t>(entry.actorId),
+                                       static_cast<uint16_t>(entry.params));
+            } else {
+                Enemies::TestSweepStep(total, total, -1, 0); // Only removes the last one
+            }
         }
     }
     const std::optional<int>& fuzzAt = options.testFuzzEnemiesAt;

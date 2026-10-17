@@ -1,5 +1,6 @@
 #include "CoopArgs.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstdio>
@@ -183,6 +184,33 @@ bool ParseSpawn(const char* text, LaunchOptions::TimedSpawn& out) {
     return true;
 }
 
+// "<actorId>[:<params>],<actorId>[:<params>],...@<seconds>"
+bool ParseSweep(const char* text, std::vector<LaunchOptions::SweepEntry>& out, int& seconds) {
+    const char* at = text != nullptr ? std::strrchr(text, '@') : nullptr;
+    long start = 0;
+    if (at == nullptr || !ParseInt(at + 1, 0, 24 * 60 * 60, start)) {
+        return false;
+    }
+    std::vector<LaunchOptions::SweepEntry> entries;
+    std::string list(text, at - text);
+    size_t pos = 0;
+    while (pos <= list.size()) {
+        const size_t comma = std::min(list.find(',', pos), list.size());
+        const std::string item = list.substr(pos, comma - pos);
+        const size_t colon = item.find(':');
+        long id = 0, params = 0;
+        if (!ParseNumber(item.substr(0, colon), 0, 0x7FFF, id) ||
+            (colon != std::string::npos && !ParseNumber(item.substr(colon + 1), 0, 0xFFFF, params))) {
+            return false;
+        }
+        entries.push_back({ static_cast<int>(id), static_cast<int>(params) });
+        pos = comma + 1;
+    }
+    out = std::move(entries);
+    seconds = static_cast<int>(start);
+    return !out.empty();
+}
+
 // "<netId|ultimo|last>@<seconds>"
 bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
     const char* at = text != nullptr ? std::strchr(text, '@') : nullptr;
@@ -256,6 +284,12 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             } else if (value != nullptr) {
                 options.warnings.push_back(
                     fmt::format("--coop-test-spawn: '{}' is not <actorId>,<params>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-sweep") {
+            const char* value = takeValue();
+            if (value != nullptr && !ParseSweep(value, options.testSweep, options.testSweepAt)) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-sweep: '{}' is not <actorId>[:<params>],...@<seconds>", value));
             }
         } else if (arg == "--coop-test-kill") {
             const char* value = takeValue();
