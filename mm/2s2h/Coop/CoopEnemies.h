@@ -16,6 +16,9 @@ void Frame();
 void TestSpawn(int16_t actorId, uint16_t params, int index);
 // Test only (host): kills the enemy with this netId (-1: the newest one still alive).
 void TestKill(int netId);
+// Test only (host), one step of --coop-test-sweep: removes every enemy spawned at run time (the previous step's,
+// with its minions and projectiles), then spawns this one and logs what became of it.
+void TestSweepStep(int step, int total, int16_t actorId, uint16_t params);
 // Test only (both): sends malformed channel messages to the other side, then a wrong summary (client: a request).
 void TestFuzz();
 

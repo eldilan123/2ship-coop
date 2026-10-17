@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
@@ -26,6 +27,7 @@ extern "C" {
 #include "macros.h"
 #include "functions.h"
 #include "variables.h"
+#include "z64malloc.h"
 }
 
 #ifdef _WIN32
@@ -200,7 +202,8 @@ void OnObjectDependency(GIVanillaBehavior, bool* should, va_list originalArgs) {
 
 // Spawns `actorId` like Actor_SpawnAsChildAndCutscene, but never refused for a missing object or because the
 // current room was already cleared (the clear flag is put back right after).
-Actor* SpawnUnchecked(int16_t actorId, const Vec3f& pos, const Vec3s& rot, uint16_t params, uint16_t netId) {
+Actor* SpawnUnchecked(int16_t actorId, const Vec3f& pos, const Vec3s& rot, uint16_t params, uint16_t netId,
+                      Actor* parent = nullptr) {
     PlayState* play = gPlayState;
     const ActorProfile* profile = gActorOverlayTable[actorId].profile;
     if (profile == nullptr) {
@@ -214,7 +217,7 @@ Actor* SpawnUnchecked(int16_t actorId, const Vec3f& pos, const Vec3s& rot, uint1
     sSpawningObjectId = profile->objectId;
     sSpawningNetId = netId;
     Actor* actor = Actor_SpawnAsChildAndCutscene(&play->actorCtx, play, actorId, pos.x, pos.y, pos.z, rot.x, rot.y,
-                                                 rot.z, params, CS_ID_NONE, HALFDAYBIT_ALL, nullptr);
+                                                 rot.z, params, CS_ID_NONE, HALFDAYBIT_ALL, parent);
     sSpawningNetId = 0;
     sSpawningObjectId = -1;
     play->actorCtx.sceneFlags.clearedRoom = clearedBefore;
@@ -267,6 +270,7 @@ struct HostEnemy {
     Actor* actor = nullptr;
     SpawnRecord record = {};
     const TypeInfo* type = nullptr;
+    ptrdiff_t actionField = -1;
     Pose lastSent;
     bool sentOnce = false;
     uint32_t lastKeyMs = 0;
@@ -333,7 +337,11 @@ SpawnRecord MakeRecord(uint16_t netId, Actor* actor) {
     r.actorId = actor->id;
     r.room = actor->room;
     r.pos = actor->world.pos;
-    r.rotY = actor->shape.rot.y;
+    r.rot = actor->shape.rot;
+    if (actor->parent != nullptr) {
+        auto parent = sHostByActor.find(actor->parent);
+        r.parentNetId = parent != sHostByActor.end() ? parent->second : 0;
+    }
     if (const Origin* origin = ObjectExtension::GetInstance().Get<Origin>(actor)) {
         r.params = origin->params;
         r.listIndex = origin->listIndex;
@@ -361,6 +369,7 @@ uint16_t HostTrack(Actor* actor) {
     enemy.actor = actor;
     enemy.record = MakeRecord(netId, actor);
     enemy.type = FindType(actor->id);
+    enemy.actionField = ActionFuncOffset(actor->id);
     sHostByActor[actor] = netId;
     SPDLOG_INFO("[Coop] Enemy net {} tracked: {} params 0x{:04X} room {} index {}", netId, TypeName(actor->id),
                 enemy.record.params, enemy.record.spawnRoom, enemy.record.listIndex);
@@ -408,7 +417,7 @@ void SendManifest(const RoomSet& rooms) {
     for (auto& [netId, enemy] : sHost) {
         enemy.record.room = enemy.actor->room;
         enemy.record.pos = enemy.actor->world.pos;
-        enemy.record.rotY = enemy.actor->shape.rot.y;
+        enemy.record.rot = enemy.actor->shape.rot;
         w.Put(enemy.record);
         enemy.sentOnce = false; // Keyframe next
     }
@@ -433,10 +442,9 @@ Pose CapturePose(const HostEnemy& enemy) {
                         ((a->flags & ACTOR_FLAG_HOSTILE) ? kLookHostile : 0);
     p.look.focusOffset = { a->focus.pos.x - a->world.pos.x, a->focus.pos.y - a->world.pos.y,
                            a->focus.pos.z - a->world.pos.z };
-    if (enemy.type != nullptr && enemy.type->actionFuncOffset >= 0) {
-        const int64_t offset =
-            static_cast<int64_t>(reinterpret_cast<uintptr_t>(ReadActionFunc(a, enemy.type->actionFuncOffset))) -
-            static_cast<int64_t>(Anchor());
+    if (enemy.actionField >= 0) {
+        const int64_t offset = static_cast<int64_t>(reinterpret_cast<uintptr_t>(ReadActionFunc(a, enemy.actionField))) -
+                               static_cast<int64_t>(Anchor());
         if (offset >= INT32_MIN && offset <= INT32_MAX && ActionFuncOffsetValid(static_cast<int32_t>(offset))) {
             p.haveActionFunc = true;
             p.actionFuncOffset = static_cast<int32_t>(offset);
@@ -600,8 +608,13 @@ void LogBandwidth(uint32_t now) {
     sStatesThisSecond = 0;
     sBandwidthSecondStart = now;
     if (GetLaunchOptions().testEnemyLog) {
-        SPDLOG_INFO("[Coop] Enemy host: {} tracked in scene {}, Link health {}/{}", sHost.size(), gPlayState->sceneId,
-                    gSaveContext.save.saveInfo.playerData.health, gSaveContext.save.saveInfo.playerData.healthCapacity);
+        size_t maxFree = 0, free = 0, alloc = 0;
+        ZeldaArena_GetSizes(&maxFree, &free, &alloc);
+        SPDLOG_INFO("[Coop] Enemy host: {} tracked in scene {}, Link health {}/{}, actors {}, arena used {} KB, "
+                    "skeletons {}",
+                    sHost.size(), gPlayState->sceneId, gSaveContext.save.saveInfo.playerData.health,
+                    gSaveContext.save.saveInfo.playerData.healthCapacity, gPlayState->actorCtx.totalLoadedActors,
+                    alloc / 1024, sSkeletons.size());
     }
 }
 
@@ -677,6 +690,7 @@ struct Puppet {
     bool visible = false;
     uint32_t updatesRun = 0;
     void* localActionFunc = nullptr;
+    ptrdiff_t actionField = -1; // ActionFuncOffset of its type
     const TypeInfo* type = nullptr;
     uint16_t hostColorParams = 0;
     uint8_t hostColorTimer = 0;
@@ -685,6 +699,8 @@ struct Puppet {
 std::unordered_map<uint16_t, Known> sKnown;
 std::unordered_map<Actor*, Puppet> sPuppets;
 std::unordered_map<uint64_t, Actor*> sDormant;
+// Enemies the client's own actors spawned (Init minions...), removed because the host's copies come by message
+std::unordered_map<int16_t, int> sLocalRemoved;
 uint32_t sClientManifestSeq = 0;
 bool sHaveManifest = false;
 RoomSet sCovered;
@@ -762,8 +778,8 @@ void RemovePuppet(Actor* actor, bool kill) {
         return;
     }
     Puppet& p = it->second;
-    if (p.type != nullptr && p.type->actionFuncOffset >= 0) {
-        WriteActionFunc(actor, p.type->actionFuncOffset, p.localActionFunc);
+    if (p.actionField >= 0) {
+        WriteActionFunc(actor, p.actionField, p.localActionFunc);
     }
     UnregisterPuppetHooks(actor, p);
     if (p.netId == 0) {
@@ -783,8 +799,8 @@ void RemovePuppet(Actor* actor, bool kill) {
 // Hidden and inert: the client's own room actor, waiting for the host's copy of the same room entry.
 void MakeDormant(Actor* actor, const Origin& origin) {
     Puppet& p = sPuppets[actor];
-    if (p.type != nullptr && p.type->actionFuncOffset >= 0) {
-        WriteActionFunc(actor, p.type->actionFuncOffset, p.localActionFunc);
+    if (p.actionField >= 0) {
+        WriteActionFunc(actor, p.actionField, p.localActionFunc);
     }
     p.netId = 0;
     p.visible = false;
@@ -803,14 +819,18 @@ void MakePuppet(Actor* actor, uint16_t netId, const Origin* origin) {
     Puppet p;
     p.netId = netId;
     p.type = FindType(actor->id);
-    if (p.type != nullptr && p.type->actionFuncOffset >= 0) {
-        p.localActionFunc = ReadActionFunc(actor, p.type->actionFuncOffset);
+    p.actionField = ActionFuncOffset(actor->id);
+    if (p.actionField >= 0) {
+        p.localActionFunc = ReadActionFunc(actor, p.actionField);
     }
     const uintptr_t ptr = reinterpret_cast<uintptr_t>(actor);
     auto* gi = GameInteractor::Instance;
     p.shouldUpdate = gi->RegisterGameHookForPtr<GameInteractor::ShouldActorUpdate>(ptr, OnPuppetShouldUpdate);
     p.shouldDraw = gi->RegisterGameHookForPtr<GameInteractor::ShouldActorDraw>(ptr, OnPuppetShouldDraw);
     p.onUpdate = gi->RegisterGameHookForPtr<GameInteractor::OnActorUpdate>(ptr, OnPuppetUpdated);
+    if (p.type != nullptr && p.type->prepare != nullptr) {
+        p.type->prepare(actor);
+    }
     // Hidden and not targetable until the host's first state arrives.
     actor->flags &= ~ACTOR_FLAG_ATTENTION_ENABLED;
     sPuppets[actor] = p;
@@ -840,7 +860,7 @@ void ClientOnActorInit(Actor* actor) {
     } else {
         // Spawned by something running on the client (another actor's Init, a drop...). Only the host creates
         // enemies; the host's copy, if it has one, arrives by message.
-        SPDLOG_INFO("[Coop] Removing {} spawned locally on the client (the host creates enemies)", TypeName(actor->id));
+        sLocalRemoved[actor->id]++;
         Actor_Kill(actor);
     }
 }
@@ -1284,9 +1304,9 @@ void ApplyPose(Actor* actor, Puppet& p, Known& known, const Pose& s) {
     actor->flags &= ~(ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_HOSTILE);
     actor->flags |= ((s.look.actorFlags & kLookAttention) ? ACTOR_FLAG_ATTENTION_ENABLED : 0) |
                     ((s.look.actorFlags & kLookHostile) ? ACTOR_FLAG_HOSTILE : 0);
-    if (p.type != nullptr && p.type->actionFuncOffset >= 0 && s.haveActionFunc) {
+    if (p.actionField >= 0 && s.haveActionFunc) {
         // Only compared by the draw code: the puppet's update, the one caller, never runs.
-        WriteActionFunc(actor, p.type->actionFuncOffset,
+        WriteActionFunc(actor, p.actionField,
                         reinterpret_cast<void*>(Anchor() + static_cast<intptr_t>(s.actionFuncOffset)));
     }
     auto skels = sSkeletons.find(actor);
@@ -1381,11 +1401,23 @@ bool RoomLoaded(int8_t room) {
 void TrySpawn(uint16_t netId, Known& known, uint32_t now) {
     const SpawnRecord& r = known.record;
     const TypeInfo* type = FindType(r.actorId);
-    if (type == nullptr || !type->validParams(r.params)) {
+    // A minion or projectile is created from its parent's puppet, as the host did.
+    Actor* parent = nullptr;
+    if (r.parentNetId != 0) {
+        auto it = sKnown.find(r.parentNetId);
+        if (it != sKnown.end() && it->second.actor == nullptr && !it->second.gaveUp) {
+            known.nextTryMs = now + 100; // The parent comes first
+            return;
+        }
+        if (it != sKnown.end() && it->second.actor != nullptr && it->second.actor->update != nullptr) {
+            parent = it->second.actor;
+        }
+    }
+    const char* why = nullptr;
+    if (!CanCreateOnClient(r.actorId, parent != nullptr, why) || (type != nullptr && !type->validParams(r.params))) {
         known.gaveUp = true;
-        SPDLOG_INFO("[Coop] Enemy net {} ({}) cannot be created on the client yet (type not supported); it stays "
-                    "invisible here",
-                    netId, TypeName(r.actorId));
+        SPDLOG_INFO("[Coop] Enemy net {} ({}) cannot be created on the client ({}); it stays invisible here", netId,
+                    TypeName(r.actorId), why != nullptr ? why : "params out of range");
         return;
     }
     if (gPlayState->actorCtx.totalLoadedActors >= kMaxLoadedActors) {
@@ -1396,7 +1428,7 @@ void TrySpawn(uint16_t netId, Known& known, uint32_t now) {
         }
         return;
     }
-    Actor* actor = SpawnUnchecked(r.actorId, r.homePos, r.homeRot, r.params, netId);
+    Actor* actor = SpawnUnchecked(r.actorId, r.homePos, r.homeRot, r.params, netId, parent);
     if (actor == nullptr || actor->update == nullptr) {
         known.failures++;
         known.nextTryMs = now + 1000;
@@ -1409,9 +1441,11 @@ void TrySpawn(uint16_t netId, Known& known, uint32_t now) {
     }
     actor->room = r.room;
     actor->world.pos = r.pos;
-    actor->shape.rot.y = actor->world.rot.y = r.rotY;
+    actor->shape.rot = r.rot;
+    actor->world.rot.y = r.rot.y;
     known.actor = actor;
-    SPDLOG_INFO("[Coop] Enemy net {} ({}) created on the client in room {}", netId, TypeName(r.actorId), r.room);
+    SPDLOG_INFO("[Coop] Enemy net {} ({}) created on the client in room {}{}", netId, TypeName(r.actorId), r.room,
+                parent != nullptr ? fmt::format(" as a child of net {}", r.parentNetId) : std::string());
 }
 
 void Materialize(uint32_t now) {
@@ -1494,10 +1528,13 @@ void LogPuppets() {
             waiting++;
         }
     }
+    size_t maxFree = 0, free = 0, alloc = 0;
+    ZeldaArena_GetSizes(&maxFree, &free, &alloc);
     SPDLOG_INFO("[Coop] Enemy puppets: {} shown, {} own room actors hidden, {} not created, {} known, updates run {}, "
-                "scene {}, Link health {}/{}",
+                "scene {}, Link health {}/{}, actors {}, arena used {} KB, skeletons {}",
                 bound, dormant, waiting, sKnown.size(), sTotalUpdatesRun, gPlayState->sceneId,
-                gSaveContext.save.saveInfo.playerData.health, gSaveContext.save.saveInfo.playerData.healthCapacity);
+                gSaveContext.save.saveInfo.playerData.health, gSaveContext.save.saveInfo.playerData.healthCapacity,
+                gPlayState->actorCtx.totalLoadedActors, alloc / 1024, sSkeletons.size());
     for (const auto& [netId, known] : sKnown) {
         if (known.actor != nullptr && sPuppets.count(known.actor)) {
             const Vec3f& pos = known.actor->world.pos;
@@ -1505,6 +1542,20 @@ void LogPuppets() {
                         TypeName(known.record.actorId), pos.x, pos.y, pos.z, sPuppets[known.actor].updatesRun);
         }
     }
+}
+
+// One line for the enemies removed this frame on the client (expected: the host sends its own copies).
+void LogLocalRemovals() {
+    if (sLocalRemoved.empty()) {
+        return;
+    }
+    std::string list;
+    for (const auto& [actorId, count] : sLocalRemoved) {
+        list += fmt::format("{}{} x{}", list.empty() ? "" : ", ", TypeName(actorId), count);
+    }
+    SPDLOG_INFO("[Coop] Enemies spawned by the client's own actors removed ({}); the host's copies arrive by message",
+                list);
+    sLocalRemoved.clear();
 }
 
 void ClientReleaseAll() {
@@ -1542,6 +1593,15 @@ void ClientFrame() {
     if (!sHaveManifest) {
         RequestManifest("none yet");
     }
+    // Actors that became enemies after their Init (a pot that starts flying...) are puppets from then on too.
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr;) {
+        Actor* next = actor->next;
+        if (actor->init == nullptr && actor->update != nullptr && sPuppets.count(actor) == 0) {
+            ClientOnActorInit(actor);
+        }
+        actor = next;
+    }
+    LogLocalRemovals();
     Materialize(now);
     SampleAndApply(now);
     LogPuppets();
@@ -1704,6 +1764,54 @@ void TestSpawn(int16_t actorId, uint16_t params, int index) {
     }
     SPDLOG_INFO("[Coop] TEST: spawned {} params 0x{:04X} at ({:.0f}, {:.0f}, {:.0f})", TypeName(actorId), params, pos.x,
                 pos.y, pos.z);
+}
+
+void TestSweepStep(int step, int total, int16_t actorId, uint16_t params) {
+    if (!IsHosting() || !InGameplay()) {
+        return;
+    }
+    // The previous step's enemy and everything it spawned (all run-time enemies; room enemies stay).
+    std::vector<Actor*> previous;
+    for (const auto& [netId, enemy] : sHost) {
+        if (enemy.record.listIndex < 0 && enemy.actor->update != nullptr) {
+            previous.push_back(enemy.actor);
+        }
+    }
+    sTestKilling = true;
+    for (Actor* actor : previous) {
+        Actor_Kill(actor);
+    }
+    sTestKilling = false;
+    if (actorId < 0) {
+        SPDLOG_INFO("[Coop] TEST: sweep finished ({} steps)", total);
+        return;
+    }
+    const char* description = TypeDescription(actorId);
+    SPDLOG_INFO("[Coop] TEST: sweep {}/{}: {} (0x{:03X}) params 0x{:04X} \"{}\"", step + 1, total, TypeName(actorId),
+                static_cast<uint16_t>(actorId), params, description);
+    if (actorId >= ACTOR_ID_MAX || gActorOverlayTable[actorId].profile == nullptr) {
+        SPDLOG_INFO("[Coop] TEST: sweep result {}: not in the actor table", TypeName(actorId));
+        return;
+    }
+    Player* player = GET_PLAYER(gPlayState);
+    const s16 yaw = player->actor.shape.rot.y;
+    const Vec3f pos = { player->actor.world.pos.x + 250.0f * Math_SinS(yaw), player->actor.world.pos.y,
+                        player->actor.world.pos.z + 250.0f * Math_CosS(yaw) };
+    const Vec3s rot = { 0, static_cast<s16>(yaw + 0x8000), 0 };
+    Actor* actor = SpawnUnchecked(actorId, pos, rot, params, 0);
+    if (actor == nullptr) {
+        SPDLOG_INFO("[Coop] TEST: sweep result {}: the game refused to spawn it", TypeName(actorId));
+    } else if (actor->update == nullptr) {
+        SPDLOG_INFO("[Coop] TEST: sweep result {}: its Init removed it (needs another place, params or flags)",
+                    TypeName(actorId));
+    } else if (actor->category != ACTORCAT_ENEMY) {
+        SPDLOG_INFO("[Coop] TEST: sweep result {}: not an enemy after Init (category {})", TypeName(actorId),
+                    actor->category);
+        Actor_Kill(actor);
+    } else {
+        SPDLOG_INFO("[Coop] TEST: sweep result {}: spawned as an enemy with {} skeleton(s)", TypeName(actorId),
+                    sSkeletons.count(actor) ? sSkeletons[actor].size() : 0);
+    }
 }
 
 void TestKill(int netId) {

@@ -21,7 +21,7 @@ extern "C" {
 namespace Coop::Enemies::Wire {
 
 constexpr uint32_t kMagic = 0x594D4E45; // "ENMY"
-constexpr uint8_t kFormatVersion = 1;
+constexpr uint8_t kFormatVersion = 2;
 
 enum class Type : uint8_t {
     Manifest = 1,
@@ -51,7 +51,8 @@ struct Header {
 static_assert(sizeof(Header) == 8);
 
 // One enemy as the host created it. Room actors are matched on the client by (scene, layer, spawnRoom, listIndex,
-// actorId), because the client's own copy of the room spawned the same entry.
+// actorId), because the client's own copy of the room spawned the same entry. Everything else is created on the
+// client from this record alone: actorId, params, home placement and the parent it was spawned from.
 struct SpawnRecord {
     uint16_t netId;
     int16_t actorId;
@@ -61,15 +62,16 @@ struct SpawnRecord {
     int8_t sceneLayer;
     int8_t spawnRoom; // Room whose list spawned it
     int8_t room;      // actor->room now; -1 survives room changes
-    uint8_t reserved[3];
+    uint8_t reserved;
+    uint16_t parentNetId; // Enemy it was spawned from (minions, projectiles), 0 if none or not an enemy
     Vec3f homePos;
     Vec3s homeRot;
     int16_t reserved2;
     Vec3f pos;
-    int16_t rotY;
+    Vec3s rot; // shape.rot
     int16_t reserved3;
 };
-static_assert(sizeof(SpawnRecord) == 52);
+static_assert(sizeof(SpawnRecord) == 56);
 
 struct ManifestHeader {
     uint32_t manifestSeq;
@@ -86,7 +88,7 @@ struct SpawnMsg {
     uint32_t manifestSeq;
     SpawnRecord record;
 };
-static_assert(sizeof(SpawnMsg) == 56);
+static_assert(sizeof(SpawnMsg) == 60);
 
 struct KillMsg {
     uint32_t manifestSeq;

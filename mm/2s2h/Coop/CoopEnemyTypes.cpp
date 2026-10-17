@@ -8,8 +8,11 @@
 
 extern "C" {
 #include "z64.h"
+#include "functions.h"
+#include "variables.h"
 #include "overlays/actors/ovl_En_Firefly/z_en_firefly.h"
 #include "overlays/actors/ovl_En_Slime/z_en_slime.h"
+#include "overlays/actors/ovl_En_St/z_en_st.h"
 #include "overlays/actors/ovl_En_Wf/z_en_wf.h"
 }
 
@@ -200,12 +203,29 @@ bool SlimeParams(uint16_t params) {
     return (params & 0xFF) < EN_SLIME_TYPE_MAX;
 }
 
+// MARK: - Large Skulltula (En_St): sets its skeleton up in an action function, once its object has loaded; a
+// puppet's update never runs, so the same skeleton is set up here.
+
+bool NoExtra(Actor*, const uint8_t*) {
+    return true;
+}
+
+void NoCapture(const Actor*, uint8_t*) {
+}
+
+void StPrepare(Actor* actor) {
+    EnSt* st = reinterpret_cast<EnSt*>(actor);
+    if (st->skelAnime.skeleton == nullptr) {
+        SkelAnime_Init(gPlayState, &st->skelAnime, (SkeletonHeader*)object_st_Skel_005298, nullptr, st->jointTable,
+                       st->morphTable, OBJECT_ST_LIMB_MAX);
+    }
+}
+
 const TypeInfo kTypes[] = {
-    { ACTOR_EN_WF, "EnWf", offsetof(EnWf, actionFunc), sizeof(WfExtra), WfCapture, WfApply, AnyParams },
-    { ACTOR_EN_FIREFLY, "EnFirefly", offsetof(EnFirefly, actionFunc), sizeof(FireflyExtra), FireflyCapture,
-      FireflyApply, AnyParams },
-    { ACTOR_EN_SLIME, "EnSlime", offsetof(EnSlime, actionFunc), sizeof(SlimeExtra), SlimeCapture, SlimeApply,
-      SlimeParams },
+    { ACTOR_EN_WF, "EnWf", sizeof(WfExtra), WfCapture, WfApply, AnyParams, nullptr },
+    { ACTOR_EN_FIREFLY, "EnFirefly", sizeof(FireflyExtra), FireflyCapture, FireflyApply, AnyParams, nullptr },
+    { ACTOR_EN_SLIME, "EnSlime", sizeof(SlimeExtra), SlimeCapture, SlimeApply, SlimeParams, nullptr },
+    { ACTOR_EN_ST, "EnSt", 0, NoCapture, NoExtra, AnyParams, StPrepare },
 };
 static_assert(sizeof(WfExtra) <= kMaxExtraSize && sizeof(FireflyExtra) <= kMaxExtraSize &&
               sizeof(SlimeExtra) <= kMaxExtraSize);
@@ -221,9 +241,50 @@ const TypeInfo* FindType(int16_t actorId) {
     return nullptr;
 }
 
+namespace {
+
+struct ActorNames {
+    const char* debug;
+    const char* human;
+};
+
+const ActorNames kActorNames[] = {
+#define DEFINE_ACTOR(_name, _enumValue, _allocType, debugName, humanName) { debugName, humanName },
+#define DEFINE_ACTOR_INTERNAL(_name, _enumValue, _allocType, debugName, humanName) { debugName, humanName },
+#define DEFINE_ACTOR_UNSET(_enumValue) { nullptr, nullptr },
+#include "tables/actor_table.h"
+#undef DEFINE_ACTOR
+#undef DEFINE_ACTOR_INTERNAL
+#undef DEFINE_ACTOR_UNSET
+};
+static_assert(sizeof(kActorNames) / sizeof(kActorNames[0]) == ACTOR_ID_MAX);
+
+// Profiles that are not ENEMY but switch to it (Actor_ChangeCategory), in Init or later.
+const int16_t kBecomeEnemies[] = { ACTOR_EN_WF, ACTOR_EN_SW, ACTOR_EN_RAF, ACTOR_EN_TUBO_TRAP };
+
+// Types whose Init or update reads their parent as a specific actor: only ever created as a child of its puppet.
+const int16_t kNeedsParent[] = { ACTOR_EN_MINIDEATH, ACTOR_EN_JSO, ACTOR_EN_PRZ, ACTOR_EN_DRAGON };
+
+// Enemy types a client must not create from a message: the game crashes when they are created away from what they
+// expect (the shooting gallery's keeper, which is not an enemy; the Wizrobe's platforms). They are still matched to
+// the client's own copy from its room data. See the sweep table in the milestone 3 report.
+const int16_t kNotOnClient[] = { ACTOR_EN_SYATEKI_CROW, ACTOR_EN_SYATEKI_WF, ACTOR_EN_SYATEKI_DEKUNUTS,
+                                 ACTOR_EN_SYATEKI_OKUTA, ACTOR_EN_WIZ };
+
+bool InList(const int16_t* list, size_t count, int16_t id) {
+    for (size_t i = 0; i < count; i++) {
+        if (list[i] == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 const char* TypeName(int16_t actorId) {
-    if (const TypeInfo* type = FindType(actorId)) {
-        return type->name;
+    if (actorId >= 0 && actorId < ACTOR_ID_MAX && kActorNames[actorId].debug != nullptr) {
+        return kActorNames[actorId].debug;
     }
     static std::unordered_map<int16_t, std::string> sNames;
     auto it = sNames.find(actorId);
@@ -231,6 +292,36 @@ const char* TypeName(int16_t actorId) {
         it = sNames.emplace(actorId, fmt::format("actor 0x{:03X}", static_cast<uint16_t>(actorId))).first;
     }
     return it->second.c_str();
+}
+
+const char* TypeDescription(int16_t actorId) {
+    if (actorId >= 0 && actorId < ACTOR_ID_MAX && kActorNames[actorId].human != nullptr) {
+        return kActorNames[actorId].human;
+    }
+    return "";
+}
+
+bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why) {
+    if (actorId < 0 || actorId >= ACTOR_ID_MAX || gActorOverlayTable[actorId].profile == nullptr) {
+        why = "not in the actor table";
+        return false;
+    }
+    const ActorProfile* profile = gActorOverlayTable[actorId].profile;
+    const bool enemy = profile->type == ACTORCAT_ENEMY ||
+                       InList(kBecomeEnemies, sizeof(kBecomeEnemies) / sizeof(kBecomeEnemies[0]), actorId);
+    if (!enemy) {
+        why = "not an enemy type";
+        return false;
+    }
+    if (InList(kNotOnClient, sizeof(kNotOnClient) / sizeof(kNotOnClient[0]), actorId)) {
+        why = "type not supported on the client";
+        return false;
+    }
+    if (!withParent && InList(kNeedsParent, sizeof(kNeedsParent) / sizeof(kNeedsParent[0]), actorId)) {
+        why = "only created as a child of its parent's puppet";
+        return false;
+    }
+    return true;
 }
 
 } // namespace Coop::Enemies

@@ -17,9 +17,6 @@ constexpr size_t kMaxExtraSize = 64;
 struct TypeInfo {
     int16_t actorId;
     const char* name;
-    // Where the type keeps its actionFunc (its draw compares it), or -1. On a puppet it is only ever compared:
-    // the puppet's update never runs.
-    ptrdiff_t actionFuncOffset;
     uint8_t extraSize;
     // Copies the draw-only fields into `out` (extraSize bytes).
     void (*capture)(const Actor* actor, uint8_t* out);
@@ -28,12 +25,24 @@ struct TypeInfo {
     bool (*apply)(Actor* actor, const uint8_t* in);
     // Whether a host message may create this type with these params (the draw code indexes tables with them).
     bool (*validParams)(uint16_t params);
+    // Optional: what the type's own update would have set up before it can be drawn (run once, on the puppet).
+    void (*prepare)(Actor* actor);
 };
 
 // nullptr if the type has no entry.
 const TypeInfo* FindType(int16_t actorId);
-// Short name for logs ("EnWf"), or "actor 0x..." text for types without an entry.
+// Where an enemy type keeps its actionFunc (many enemy draws compare it), or -1. Generated for every enemy type
+// (CoopEnemyActionFuncs.inc). On a puppet the host's value is only ever compared: the puppet's update never runs.
+ptrdiff_t ActionFuncOffset(int16_t actorId);
+// The actor's name from the actor table for logs ("En_Wf"), or "actor 0x..." for an unknown id.
 const char* TypeName(int16_t actorId);
+// Its human readable description from the actor table ("Wolfos/White Wolfos"), or "".
+const char* TypeDescription(int16_t actorId);
+// Whether a host message may create this type on a client: an enemy (by profile, or switching to ENEMY in its
+// Init), not a boss, and not known to misbehave as a puppet. Types without an entry are drawn with the generic
+// fields only (pose, placement, scale, color filter).
+// `withParent`: the host spawned it from another enemy and the client has that enemy's puppet.
+bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why);
 
 } // namespace Coop::Enemies
 
