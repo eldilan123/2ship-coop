@@ -515,6 +515,11 @@ void Frame() {
     LogSamples();
 }
 
+Player* PuppetOf(uint32_t playerId) {
+    auto it = sPuppets.find(playerId);
+    return it != sPuppets.end() ? it->second.actor : nullptr;
+}
+
 static RegisterShipInitFunc initFunc(RegisterPuppetHooks);
 
 } // namespace Coop::Puppet

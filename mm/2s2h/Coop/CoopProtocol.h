@@ -16,7 +16,7 @@ namespace Coop::Protocol {
 // Coop protocol number. BUMP BY HAND whenever the wire format or the meaning of any message changes (new required
 // field, changed type, new binary channel layout...). The host rejects a client whose protocol number or build ID
 // differs from its own.
-constexpr int kProtocolVersion = 4;
+constexpr int kProtocolVersion = 5;
 
 // Binary channels (SendBinary). JSON control types are listed in CoopNet.cpp. Application JSON types:
 // "enter_request" / "enter_denied" (client enters the host's world), "host_room" (host changed room) and
@@ -25,6 +25,7 @@ constexpr uint8_t kChannelSnapshot = 1;    // Session snapshot, see CoopSnapshot
 constexpr uint8_t kChannelClock = 2;       // Host clock, see CoopClock.h
 constexpr uint8_t kChannelPlayerState = 3; // Pose of each player's Link, see CoopPlayerSync.h
 constexpr uint8_t kChannelEnemies = 4;     // Enemies simulated by the host, see CoopEnemyWire.h
+constexpr uint8_t kChannelHits = 5;        // A client's hits on enemies and the host's results, see CoopCombat.cpp
 
 constexpr uint8_t kBinaryMarker = 0x01;
 constexpr size_t kBinaryHeaderSize = 6;

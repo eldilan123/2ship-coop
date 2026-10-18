@@ -9,6 +9,7 @@
 #include <ship/window/Window.h>
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopPlayerSync.h"
 #include "CoopPuppet.h"
@@ -130,6 +131,8 @@ void OnFrame() {
     Clock::Frame();
     PlayerSync::Frame();
     Puppet::Frame();
+    // Before the enemy puppets register their colliders again: hits on them are read from last frame's check.
+    Combat::Frame();
     Enemies::Frame();
     Test::Frame();
     LogNetStats();
