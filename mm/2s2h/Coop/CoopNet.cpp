@@ -134,6 +134,7 @@ struct CoopNet::Connection {
     Clock::time_point lastReceived;
     Clock::time_point lastPingSent;
     int32_t rttMs = -1;
+    std::deque<std::pair<Clock::time_point, std::string>> delayedOut; // --coop-test-net-delay, in order
 };
 
 const char* SessionStateName(SessionState state) {
@@ -234,7 +235,18 @@ void CoopNet::SendBinary(uint32_t target, uint8_t channel, const void* data, siz
 std::vector<AppMessage> CoopNet::TakeInbox() {
     std::vector<AppMessage> messages;
     std::lock_guard<std::mutex> lock(mInboxMutex);
-    messages.swap(mInbox);
+    if (mConfig.testNetDelayMs <= 0) {
+        messages.swap(mInbox);
+        return messages;
+    }
+    // Only the messages whose delay is over, oldest first; the rest keep their order.
+    const Clock::time_point now = Clock::now();
+    size_t due = 0;
+    while (due < mInbox.size() && mInbox[due].due <= now) {
+        due++;
+    }
+    messages.assign(std::make_move_iterator(mInbox.begin()), std::make_move_iterator(mInbox.begin() + due));
+    mInbox.erase(mInbox.begin(), mInbox.begin() + due);
     return messages;
 }
 
@@ -302,7 +314,7 @@ void CoopNet::PushInbox(uint32_t from, Protocol::Frame&& frame) {
         NoteDropped();
         return;
     }
-    mInbox.push_back({ from, std::move(frame) });
+    mInbox.push_back({ from, std::move(frame), Clock::now() + std::chrono::milliseconds(mConfig.testNetDelayMs) });
 }
 
 void CoopNet::SetState(SessionState state, const std::string& message) {
@@ -370,6 +382,24 @@ bool CoopNet::ReadFrom(Connection& conn, std::vector<Protocol::Frame>& frames) {
 
 void CoopNet::SendRaw(Connection& conn, const std::string& bytes) {
     if (conn.closed || bytes.empty()) {
+        return;
+    }
+    if (mConfig.testNetDelayMs > 0) {
+        conn.delayedOut.push_back({ Clock::now() + std::chrono::milliseconds(mConfig.testNetDelayMs), bytes });
+        return;
+    }
+    SendNow(conn, bytes);
+}
+
+void CoopNet::FlushDelayed(Connection& conn, Clock::time_point now) {
+    while (!conn.delayedOut.empty() && conn.delayedOut.front().first <= now) {
+        SendNow(conn, conn.delayedOut.front().second);
+        conn.delayedOut.pop_front();
+    }
+}
+
+void CoopNet::SendNow(Connection& conn, const std::string& bytes) {
+    if (conn.closed) {
         return;
     }
     const int length = static_cast<int>(bytes.size());
@@ -551,6 +581,9 @@ void CoopNet::RunHost() {
             }
         }
 
+        for (auto& conn : conns) {
+            FlushDelayed(*conn, Clock::now());
+        }
         UpdateSilence(now);
         for (auto& conn : conns) {
             if (conn->closed) {
@@ -803,6 +836,7 @@ void CoopNet::RunClient() {
             }
         }
 
+        FlushDelayed(host, Clock::now());
         UpdateSilence(now);
         if (!host.closed) {
             if (!host.active) {

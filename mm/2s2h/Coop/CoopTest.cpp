@@ -8,7 +8,9 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopCombat.h"
 #include "CoopEnemies.h"
+#include "CoopEnemyTypes.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -52,6 +54,17 @@ int sSpawnIndex = 0;
 size_t sNextKill = 0;
 bool sFuzzDone = false;
 int sSweepDone = -1;
+// --coop-test-attack: presses in progress (game input, applied in OnPassPlayerInputs)
+struct AttackState {
+    int done = 0;
+    SteadyClock::time_point next = {};
+};
+std::vector<AttackState> sAttacks;
+uint16_t sHeldButtons = 0;
+bool sHeldStick = false;
+s16 sStickYaw = 0; // World direction the stick pushes towards while held
+bool sPressEdge = false;
+SteadyClock::time_point sHeldUntil = {};
 constexpr int kSweepStepSeconds = 5;
 
 bool InGameplay() {
@@ -347,10 +360,95 @@ void UpdateEnemyTests() {
     if (fuzzAt.has_value() && !sFuzzDone && seconds >= *fuzzAt && (IsHosting() || IsClientPlayingInSession())) {
         sFuzzDone = true;
         Enemies::TestFuzz();
+        Combat::TestFuzz();
+    }
+}
+
+// --coop-test-attack: puts the local Link `distance` in front of the nearest enemy, facing it, on the floor.
+void ApproachNearestEnemy(int distance) {
+    PlayState* play = gPlayState;
+    Player* player = GET_PLAYER(play);
+    Actor* enemy = Enemies::NearestEnemy(player->actor.world.pos);
+    if (enemy == nullptr) {
+        SPDLOG_INFO("[Coop] TEST: no enemy to approach");
+        return;
+    }
+    s16 yawFromEnemy = Math_Vec3f_Yaw(&enemy->world.pos, &player->actor.world.pos);
+    Vec3f pos = { enemy->world.pos.x + distance * Math_SinS(yawFromEnemy), enemy->world.pos.y + 50.0f,
+                  enemy->world.pos.z + distance * Math_CosS(yawFromEnemy) };
+    CollisionPoly* poly = nullptr;
+    s32 bgId = 0;
+    const f32 floor = BgCheck_EntityRaycastFloor5(&play->colCtx, &poly, &bgId, &player->actor, &pos);
+    if (poly != nullptr) {
+        pos.y = floor;
+    }
+    const s16 facing = static_cast<s16>(yawFromEnemy + 0x8000);
+    player->actor.world.pos = pos;
+    player->actor.prevPos = pos;
+    player->actor.shape.rot.y = player->actor.world.rot.y = player->yaw = facing;
+    SPDLOG_INFO("[Coop] TEST: Link placed {} units from {} at ({:.0f}, {:.0f}, {:.0f})", distance,
+                Enemies::TypeName(enemy->id), pos.x, pos.y, pos.z);
+}
+
+void UpdateAttacks() {
+    const auto& attacks = GetLaunchOptions().testAttack;
+    sAttacks.resize(attacks.size());
+    const auto now = SteadyClock::now();
+    if (sHeldButtons != 0 || now < sHeldUntil) {
+        return; // One press at a time
+    }
+    const int seconds = GameplaySeconds();
+    for (size_t i = 0; i < attacks.size(); i++) {
+        const LaunchOptions::TimedAttack& a = attacks[i];
+        AttackState& state = sAttacks[i];
+        if (seconds < a.atSeconds || state.done >= a.count || now < state.next) {
+            continue;
+        }
+        if (a.approach > 0) {
+            ApproachNearestEnemy(a.approach);
+        }
+        const std::string& b = a.button;
+        sHeldButtons = b == "b" ? BTN_B : b == "z" ? BTN_Z : b == "r" ? BTN_R : BTN_A;
+        sHeldStick = b == "roll";
+        sStickYaw = GET_PLAYER(gPlayState)->actor.shape.rot.y;
+        sPressEdge = true;
+        sHeldUntil = now + std::chrono::milliseconds(a.holdMs);
+        state.done++;
+        state.next = now + std::chrono::milliseconds(a.intervalMs);
+        SPDLOG_INFO("[Coop] TEST: press {} ({}/{}, {} ms)", b, state.done, a.count, a.holdMs);
+        return;
+    }
+}
+
+// Applied to the local Link's input only (Player passes its own input through this hook).
+void OnPassPlayerInputs(Input* input) {
+    if (sHeldButtons == 0) {
+        return;
+    }
+    if (SteadyClock::now() >= sHeldUntil) {
+        input->rel.button |= sHeldButtons;
+        sHeldButtons = 0;
+        sHeldStick = false;
+        return;
+    }
+    input->cur.button |= sHeldButtons;
+    if (sPressEdge) {
+        input->press.button |= sHeldButtons;
+        sPressEdge = false;
+    }
+    if (sHeldStick) {
+        // Player turns the stick into a world direction relative to the camera: push towards the Link's facing
+        // (the enemy, after the approach) whatever the camera does.
+        const s16 angle = static_cast<s16>(sStickYaw - Camera_GetInputDirYaw(GET_ACTIVE_CAM(gPlayState)));
+        const s8 x = static_cast<s8>(-Math_SinS(angle) * 80.0f);
+        const s8 y = static_cast<s8>(Math_CosS(angle) * 80.0f);
+        input->cur.stick_x = input->rel.stick_x = x;
+        input->cur.stick_y = input->rel.stick_y = y;
     }
 }
 
 void RegisterTestHooks() {
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPassPlayerInputs>(OnPassPlayerInputs);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
 }
@@ -374,6 +472,7 @@ void Frame() {
     }
     UpdateLocalChanges();
     UpdateEnemyTests();
+    UpdateAttacks();
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;

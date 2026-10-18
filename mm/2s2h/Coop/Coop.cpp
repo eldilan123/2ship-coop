@@ -47,6 +47,12 @@ bool StartSession(SessionConfig config) {
     config.buildVersion = BuildVersion();
     config.protocolVersion = ProtocolVersion();
     config.silenceAfterSeconds = GetLaunchOptions().silenceAfterSeconds;
+    config.testNetDelayMs = GetLaunchOptions().testNetDelayMs;
+    if (config.testNetDelayMs > 0) {
+        SPDLOG_WARN("[Coop] TEST: ===== SIMULATED LATENCY ON: everything this game sends, and every message it "
+                    "receives, waits {} ms (--coop-test-net-delay; pings received are not delayed) =====",
+                    config.testNetDelayMs);
+    }
     return Net().Start(config);
 }
 

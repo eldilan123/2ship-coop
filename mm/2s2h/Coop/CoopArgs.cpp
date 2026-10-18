@@ -211,6 +211,41 @@ bool ParseSweep(const char* text, std::vector<LaunchOptions::SweepEntry>& out, i
     return !out.empty();
 }
 
+// "<button>[:<count>[:<intervalMs>[:<holdMs>[:<approach>]]]]@<seconds>"
+bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out) {
+    const char* at = text != nullptr ? std::strrchr(text, '@') : nullptr;
+    long seconds = 0;
+    if (at == nullptr || !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+        return false;
+    }
+    std::vector<std::string> parts;
+    std::string spec(text, at - text);
+    size_t pos = 0;
+    while (pos <= spec.size()) {
+        const size_t colon = std::min(spec.find(':', pos), spec.size());
+        parts.push_back(spec.substr(pos, colon - pos));
+        pos = colon + 1;
+    }
+    const std::string& button = parts[0];
+    if (button != "b" && button != "a" && button != "z" && button != "r" && button != "roll") {
+        return false;
+    }
+    long values[4] = { 1, 700, 100, 0 };
+    const long limits[4] = { 1000, 60000, 60000, 1000 };
+    for (size_t i = 1; i < parts.size() && i <= 4; i++) {
+        if (!ParseInt(parts[i].c_str(), 0, limits[i - 1], values[i - 1])) {
+            return false;
+        }
+    }
+    out = { button,
+            static_cast<int>(values[0]),
+            static_cast<int>(values[1]),
+            static_cast<int>(values[2]),
+            static_cast<int>(values[3]),
+            static_cast<int>(seconds) };
+    return parts.size() <= 5;
+}
+
 // "<netId|ultimo|last>@<seconds>"
 bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
     const char* at = text != nullptr ? std::strchr(text, '@') : nullptr;
@@ -219,7 +254,9 @@ bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
     }
     const std::string which(text, at - text);
     long netId = -1, seconds = 0;
-    if (which != "ultimo" && which != "last" && !ParseInt(which.c_str(), 1, 0xFFFF, netId)) {
+    if (which == "todos" || which == "all") {
+        netId = -2;
+    } else if (which != "ultimo" && which != "last" && !ParseInt(which.c_str(), 1, 0xFFFF, netId)) {
         return false;
     }
     if (!ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
@@ -284,6 +321,23 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             } else if (value != nullptr) {
                 options.warnings.push_back(
                     fmt::format("--coop-test-spawn: '{}' is not <actorId>,<params>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-attack") {
+            const char* value = takeValue();
+            LaunchOptions::TimedAttack timed;
+            if (value != nullptr && ParseAttack(value, timed)) {
+                options.testAttack.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format(
+                    "--coop-test-attack: '{}' is not <b|a|z|r|roll>[:count[:intervalMs[:holdMs[:approach]]]]@<seconds>",
+                    value));
+            }
+        } else if (arg == "--coop-test-net-delay") {
+            const char* value = takeValue();
+            if (value != nullptr && ParseInt(value, 1, 2000, number)) {
+                options.testNetDelayMs = static_cast<int>(number);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-test-net-delay: '{}' is not 1-2000 ms", value));
             }
         } else if (arg == "--coop-test-sweep") {
             const char* value = takeValue();

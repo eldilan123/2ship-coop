@@ -51,6 +51,7 @@ struct SessionConfig {
     std::string buildVersion;
     int protocolVersion = Protocol::kProtocolVersion; // Only differs when faked for testing
     int silenceAfterSeconds = 0;                      // Test only: stop heartbeats after this many seconds (0 = never)
+    int testNetDelayMs = 0; // Test only: everything sent, and every application message received, waits this long
 };
 
 struct SessionSnapshot {
@@ -82,6 +83,7 @@ struct NetStats {
 struct AppMessage {
     uint32_t from = 0;
     Protocol::Frame frame;
+    std::chrono::steady_clock::time_point due = {}; // --coop-test-net-delay: not handed to the game before this
 };
 
 // Owns every socket and the network thread. The game thread only talks to it through Start/Stop, the outbox
@@ -151,6 +153,8 @@ class CoopNet {
     // Shared by both roles
     bool ReadFrom(Connection& conn, std::vector<Protocol::Frame>& frames);
     void SendRaw(Connection& conn, const std::string& bytes);
+    void SendNow(Connection& conn, const std::string& bytes);
+    void FlushDelayed(Connection& conn, Clock::time_point now);
     void SendControl(Connection& conn, const nlohmann::json& message);
     bool HandleHeartbeatMessage(Connection& conn, const Protocol::Frame& frame);
     void TickHeartbeat(Connection& conn, Clock::time_point now);

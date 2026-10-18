@@ -60,7 +60,8 @@ struct LaunchOptions {
         int atSeconds;
     };
     std::vector<TimedSpawn> testSpawn;
-    std::vector<TimedValue> testKill; // Host: value = netId, -1 = the newest enemy still alive
+    // Host: value = netId, -1 = the newest enemy still alive, -2 = every enemy spawned at run time ("todos")
+    std::vector<TimedValue> testKill;
     // Both: seconds after reaching gameplay to send malformed enemy channel messages to the other side
     std::optional<int> testFuzzEnemiesAt;
     // Host: from testSweepAt on, every kSweepStepSeconds remove the previous test enemy and spawn the next one
@@ -70,6 +71,19 @@ struct LaunchOptions {
     };
     std::vector<SweepEntry> testSweep;
     int testSweepAt = 0;
+    int testNetDelayMs = 0; // Both: simulated latency on what this game sends and receives
+    // Both: press buttons on the local Link (in-game input, never the OS): `button` is "b", "a", "z", "r" or
+    // "roll" (A held with the stick forward); `count` presses every `intervalMs`, each held `holdMs`; with
+    // `approach` > 0 the Link is first placed that far in front of the nearest enemy, facing it.
+    struct TimedAttack {
+        std::string button;
+        int count;
+        int intervalMs;
+        int holdMs;
+        int approach;
+        int atSeconds;
+    };
+    std::vector<TimedAttack> testAttack;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };
