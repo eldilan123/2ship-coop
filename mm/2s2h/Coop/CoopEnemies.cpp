@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
+#include "CoopEnemyColliders.h"
 #include "CoopEnemyTypes.h"
 #include "CoopEnemyWire.h"
 #include "CoopPlayerSync.h"
@@ -261,7 +262,9 @@ struct Pose {
     std::array<std::array<Vec3s, kMaxLimbs>, kMaxSkeletons> joints = {};
     uint8_t extraSize = 0;
     std::array<uint8_t, kMaxExtraSize> extra = {};
-    bool haveBase = false; // A keyframe has been merged
+    std::vector<uint8_t> colliderBlock; // Host: encoded AC colliders, to send only when they change
+    AcColliders colliders;              // Client: decoded AC colliders
+    bool haveBase = false;              // A keyframe has been merged
 };
 
 // MARK: - Host
@@ -276,6 +279,7 @@ struct HostEnemy {
     uint32_t lastKeyMs = 0;
     float credit = 1.0f;
     bool isNear = false;
+    int16_t loggedHealth = -1; // --coop-test-enemy-log: last health written to the log
 };
 
 std::unordered_map<uint16_t, HostEnemy> sHost;
@@ -428,7 +432,7 @@ void SendManifest(const RoomSet& rooms) {
                 rooms.sceneId, rooms.curRoom, rooms.prevRoom);
 }
 
-Pose CapturePose(const HostEnemy& enemy) {
+Pose CapturePose(const HostEnemy& enemy, bool withColliders) {
     const Actor* a = enemy.actor;
     Pose p;
     p.pos = a->world.pos;
@@ -468,6 +472,14 @@ Pose CapturePose(const HostEnemy& enemy) {
         p.extraSize = enemy.type->extraSize;
         enemy.type->capture(a, p.extra.data());
     }
+    // Where it can be hit, only while a player is close enough to hit it (an empty block clears them).
+    Writer colliders;
+    if (withColliders) {
+        EncodeAcColliders(a, colliders);
+    } else {
+        colliders.Put(uint8_t{ 0 });
+    }
+    p.colliderBlock = std::move(colliders.buffer);
     return p;
 }
 
@@ -489,6 +501,9 @@ void EncodeRecord(Writer& w, uint16_t netId, const Pose& p, const Pose& last, bo
     if (p.extraSize > 0 &&
         (key || last.extraSize != p.extraSize || std::memcmp(p.extra.data(), last.extra.data(), p.extraSize) != 0)) {
         flags |= kExtra;
+    }
+    if (key || p.colliderBlock != last.colliderBlock) {
+        flags |= kColliders;
     }
     w.Put(StateBase{ netId, flags, p.skelCount, p.pos, p.shapeRot, p.worldRotY });
     if (flags & kScale) {
@@ -520,6 +535,10 @@ void EncodeRecord(Writer& w, uint16_t netId, const Pose& p, const Pose& last, bo
     if (flags & kExtra) {
         w.Put(p.extraSize);
         w.Bytes(p.extra.data(), p.extraSize);
+    }
+    if (flags & kColliders) {
+        w.Put(static_cast<uint16_t>(p.colliderBlock.size()));
+        w.Bytes(p.colliderBlock.data(), p.colliderBlock.size());
     }
 }
 
@@ -555,7 +574,7 @@ void SendStates(uint32_t now) {
             continue;
         }
         enemy.credit = std::max(0.0f, enemy.credit - 1.0f);
-        const Pose pose = CapturePose(enemy);
+        const Pose pose = CapturePose(enemy, enemy.isNear);
         EncodeRecord(body, netId, pose, enemy.lastSent, key);
         enemy.lastSent = pose;
         enemy.sentOnce = true;
@@ -631,6 +650,8 @@ void HostFrame() {
     }
     PlayState* play = gPlayState;
     const uint32_t now = NowMs();
+    // Before this frame's collision check: the lists still hold what every actor registered last frame.
+    CaptureAcRegistrations(play);
 
     std::vector<uint16_t> fresh;
     for (Actor* actor = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
@@ -651,6 +672,18 @@ void HostFrame() {
     }
 
     SendStates(now);
+
+    // Test log: every change of an enemy's health, whoever hit it (the host's Link or a client's replayed hit).
+    if (GetLaunchOptions().testEnemyLog) {
+        for (auto& [netId, enemy] : sHost) {
+            const int16_t health = enemy.actor->colChkInfo.health;
+            if (enemy.loggedHealth >= 0 && health != enemy.loggedHealth) {
+                SPDLOG_INFO("[Coop] Enemy net {} {} health {} -> {}", netId, TypeName(enemy.actor->id),
+                            enemy.loggedHealth, health);
+            }
+            enemy.loggedHealth = health;
+        }
+    }
 
     if (now - sLastSummaryMs >= kSummaryMs) {
         sLastSummaryMs = now;
@@ -694,6 +727,8 @@ struct Puppet {
     const TypeInfo* type = nullptr;
     uint16_t hostColorParams = 0;
     uint8_t hostColorTimer = 0;
+    std::vector<Collider*> registered; // Registered for AC this frame (hits on them are read next frame)
+    bool loggedColliders = false;
 };
 
 std::unordered_map<uint16_t, Known> sKnown;
@@ -1055,6 +1090,7 @@ struct Decoded {
     std::array<std::array<Vec3s, kMaxLimbs>, kMaxSkeletons> joints = {};
     uint8_t extraSize = 0;
     std::array<uint8_t, kMaxExtraSize> extra = {};
+    AcColliders colliders;
 };
 
 bool DecodeRecord(Reader& r, Decoded& d, const char*& why) {
@@ -1123,6 +1159,23 @@ bool DecodeRecord(Reader& r, Decoded& d, const char*& why) {
         }
         r.Bytes(d.extra.data(), d.extraSize);
     }
+    if (flags & kColliders) {
+        const uint16_t size = r.Get<uint16_t>();
+        if (!r.ok || size == 0 || size > kMaxColliderBlock || size > r.Remaining()) {
+            why = "collider block size out of range";
+            return false;
+        }
+        std::vector<uint8_t> block(size);
+        r.Bytes(block.data(), size);
+        Reader colliders(block.data(), block.size());
+        if (!DecodeAcColliders(colliders, d.colliders, why)) {
+            return false;
+        }
+        if (colliders.Remaining() != 0) {
+            why = "bytes after the colliders";
+            return false;
+        }
+    }
     if (!r.ok) {
         why = "truncated record";
         return false;
@@ -1176,6 +1229,9 @@ void Merge(Known& known, const Decoded& d, uint32_t seq, uint32_t sentMs) {
     if (flags & kExtra) {
         m.extraSize = d.extraSize;
         m.extra = d.extra;
+    }
+    if (flags & kColliders) {
+        m.colliders = d.colliders;
     }
     if (flags & kFull) {
         m.haveBase = true;
@@ -1363,6 +1419,9 @@ void SampleAndApply(uint32_t now) {
         offset = std::min(offset, o);
     }
     const int64_t target = static_cast<int64_t>(now) - offset - sDelayMs;
+    for (auto& [actor, puppet] : sPuppets) {
+        puppet.registered.clear();
+    }
     for (auto& [netId, known] : sKnown) {
         if (known.actor == nullptr || known.history.empty()) {
             continue;
@@ -1373,7 +1432,20 @@ void SampleAndApply(uint32_t now) {
             // holding their last pose (they move in steps otherwise).
             const int64_t own = std::clamp<int64_t>(static_cast<int64_t>(known.intervalMs * 1.25f) + 20, 0, 600);
             const int64_t extra = std::max<int64_t>(0, own - sDelayMs);
-            ApplyPose(known.actor, puppet->second, known, PoseAt(known.history, target - extra));
+            const Pose pose = PoseAt(known.history, target - extra);
+            ApplyPose(known.actor, puppet->second, known, pose);
+            // Where the host had it hittable, around the drawn position, for this frame's collision check.
+            if (puppet->second.visible && known.actor->update != nullptr && !pose.colliders.empty()) {
+                int mismatches = 0;
+                RegisterPuppetColliders(gPlayState, known.actor, pose.colliders, known.actor->world.pos,
+                                        puppet->second.registered, mismatches);
+                if (mismatches > 0 && !puppet->second.loggedColliders) {
+                    puppet->second.loggedColliders = true;
+                    SPDLOG_WARN("[Coop] Enemy net {} ({}): {} collider(s) from the host do not match the puppet; "
+                                "not hittable there",
+                                netId, TypeName(known.record.actorId), mismatches);
+                }
+            }
         }
     }
     // Test log: the puppet's pose at exactly the host time of a logged batch, as the client reconstructs it, once
@@ -1743,6 +1815,67 @@ void Frame() {
     ClientFrame();
 }
 
+// MARK: - Combat support
+
+Actor* HostEnemyActor(uint16_t netId) {
+    auto it = sHost.find(netId);
+    return it != sHost.end() && it->second.actor->update != nullptr ? it->second.actor : nullptr;
+}
+
+uint16_t HostNetIdOf(const Actor* actor) {
+    auto it = sHostByActor.find(const_cast<Actor*>(actor));
+    return it != sHostByActor.end() ? it->second : 0;
+}
+
+void ForEachRegisteredPuppetCollider(const std::function<void(uint16_t netId, Actor* actor, Collider* col)>& fn) {
+    for (auto& [actor, puppet] : sPuppets) {
+        if (puppet.netId == 0) {
+            continue;
+        }
+        for (Collider* col : puppet.registered) {
+            fn(puppet.netId, actor, col);
+        }
+    }
+}
+
+Actor* PuppetActor(uint16_t netId) {
+    auto it = sKnown.find(netId);
+    if (it == sKnown.end() || it->second.actor == nullptr) {
+        return nullptr;
+    }
+    auto puppet = sPuppets.find(it->second.actor);
+    return puppet != sPuppets.end() && puppet->second.visible ? it->second.actor : nullptr;
+}
+
+Actor* NearestEnemy(const Vec3f& from) {
+    // Enemies spawned at run time (the test's own) first; room enemies (the town dog...) only if there are none.
+    Actor* best[2] = { nullptr, nullptr };
+    float bestDistance[2] = { 1e9f, 1e9f };
+    auto consider = [&](Actor* actor, bool dynamic) {
+        const int i = dynamic ? 0 : 1;
+        const float d = Distance(from, actor->world.pos);
+        if (d < bestDistance[i]) {
+            bestDistance[i] = d;
+            best[i] = actor;
+        }
+    };
+    if (IsHosting()) {
+        for (const auto& [netId, enemy] : sHost) {
+            if (enemy.actor->update != nullptr) {
+                consider(enemy.actor, enemy.record.listIndex < 0);
+            }
+        }
+    } else {
+        for (const auto& [actor, puppet] : sPuppets) {
+            auto known = sKnown.find(puppet.netId);
+            if (puppet.netId != 0 && puppet.visible && actor->update != nullptr && known != sKnown.end()) {
+                consider(actor, known->second.record.listIndex < 0);
+            }
+        }
+    }
+    return best[0] != nullptr ? best[0] : best[1];
+}
+
 // MARK: - Tests
 
 void TestSpawn(int16_t actorId, uint16_t params, int index) {
@@ -1817,6 +1950,22 @@ void TestSweepStep(int step, int total, int16_t actorId, uint16_t params) {
 
 void TestKill(int netId) {
     if (!IsHosting()) {
+        return;
+    }
+    if (netId == -2) {
+        // Every enemy spawned at run time (test enemies and what they spawned); room enemies stay.
+        std::vector<Actor*> dynamic;
+        for (const auto& [id, enemy] : sHost) {
+            if (enemy.record.listIndex < 0 && enemy.actor->update != nullptr) {
+                dynamic.push_back(enemy.actor);
+            }
+        }
+        SPDLOG_INFO("[Coop] TEST: killing every enemy spawned at run time ({})", dynamic.size());
+        sTestKilling = true;
+        for (Actor* actor : dynamic) {
+            Actor_Kill(actor);
+        }
+        sTestKilling = false;
         return;
     }
     uint16_t id = static_cast<uint16_t>(std::max(netId, 0));

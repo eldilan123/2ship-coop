@@ -2,6 +2,11 @@
 #define COOP_ENEMIES_H
 
 #include <cstdint>
+#include <functional>
+
+extern "C" {
+#include "z64.h"
+}
 
 // Enemy sync (binary channel kChannelEnemies, see CoopEnemyWire.h). The host simulates every enemy (category
 // ACTORCAT_ENEMY) and gives each one a netId; on a client in the session every enemy is a puppet: its update never
@@ -12,9 +17,21 @@ namespace Coop::Enemies {
 // Called once per frame from the coop frame hook.
 void Frame();
 
+// For hits on enemies (CoopCombat). Host: the live enemy with this netId, or null; the netId of an enemy, or 0.
+Actor* HostEnemyActor(uint16_t netId);
+uint16_t HostNetIdOf(const Actor* actor);
+// Client: the colliders registered for AC on each shown puppet in the previous frame (before this frame's
+// registration replaces them), with the puppet's netId.
+void ForEachRegisteredPuppetCollider(const std::function<void(uint16_t netId, Actor* actor, Collider* col)>& fn);
+// Client: the shown puppet with this netId, or null.
+Actor* PuppetActor(uint16_t netId);
+// Test only: the nearest live enemy (host) or shown puppet (client) to `from`, or null.
+Actor* NearestEnemy(const Vec3f& from);
+
 // Test only (host): spawns an enemy in front of the local Link. `index` spreads several spawns made at once.
 void TestSpawn(int16_t actorId, uint16_t params, int index);
-// Test only (host): kills the enemy with this netId (-1: the newest one still alive).
+// Test only (host): kills the enemy with this netId (-1: the newest one still alive; -2: every enemy spawned at
+// run time).
 void TestKill(int netId);
 // Test only (host), one step of --coop-test-sweep: removes every enemy spawned at run time (the previous step's,
 // with its minions and projectiles), then spawns this one and logs what became of it.

@@ -21,7 +21,7 @@ extern "C" {
 namespace Coop::Enemies::Wire {
 
 constexpr uint32_t kMagic = 0x594D4E45; // "ENMY"
-constexpr uint8_t kFormatVersion = 2;
+constexpr uint8_t kFormatVersion = 3;
 
 enum class Type : uint8_t {
     Manifest = 1,
@@ -125,6 +125,8 @@ static_assert(sizeof(StatesHeader) == 12);
 //   kActionFunc: int32 offset of actionFunc from a function of this binary (both peers run the same build)
 //   skelCount x  { u8 limbCount, u64 changed-joint mask, one Vec3s per set bit }
 //   kExtra:      u8 size, then the type's draw-only fields (CoopEnemyTypes)
+//   kColliders:  u16 size, then the colliders the enemy can be hit on (CoopEnemyColliders); only for enemies near a
+//                player, and a block with 0 colliders when one moves away
 // kFull marks a keyframe: every part present and every joint sent; the rest are deltas against the previous record
 // of the same netId (TCP delivers them all, in order).
 struct StateBase {
@@ -152,7 +154,9 @@ constexpr uint8_t kScale = 1 << 1;
 constexpr uint8_t kLook = 1 << 2;
 constexpr uint8_t kActionFunc = 1 << 3;
 constexpr uint8_t kExtra = 1 << 4;
-constexpr uint8_t kKnownFlags = kFull | kScale | kLook | kActionFunc | kExtra;
+constexpr uint8_t kColliders = 1 << 5;
+constexpr uint8_t kKnownFlags = kFull | kScale | kLook | kActionFunc | kExtra | kColliders;
+constexpr size_t kMaxColliderBlock = 4096;
 
 constexpr uint8_t kLookAttention = 1 << 0;
 constexpr uint8_t kLookHostile = 1 << 1;
