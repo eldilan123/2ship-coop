@@ -12,6 +12,7 @@
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopEnemies.h"
+#include "CoopEnemyColliders.h"
 #include "CoopArgs.h"
 #include "CoopEnemyTypes.h"
 #include "CoopEnemyWire.h"
@@ -539,6 +540,61 @@ void HostOnHit(uint32_t from, Reader& r) {
     player.queue.push_back({ m, now });
 }
 
+// Current center of the element the client hit, if `offset` really is one of the enemy's colliders.
+bool ElementCenter(Actor* target, uint16_t offset, uint8_t element, Vec3f& out) {
+    if (target->overlayEntry == nullptr || target->overlayEntry->profile == nullptr ||
+        static_cast<size_t>(offset) + sizeof(Collider) > target->overlayEntry->profile->instanceSize) {
+        return false;
+    }
+    Collider* col = reinterpret_cast<Collider*>(reinterpret_cast<uint8_t*>(target) + offset);
+    if (col->actor != target ||
+        Enemies::PuppetCollider(target, offset, col->shape,
+                                col->shape == COLSHAPE_JNTSPH ? reinterpret_cast<ColliderJntSph*>(col)->count
+                                : col->shape == COLSHAPE_TRIS ? reinterpret_cast<ColliderTris*>(col)->count
+                                                              : 1) != col) {
+        return false;
+    }
+    auto sphere = [&](const Sphere16& s) {
+        out = { static_cast<f32>(s.center.x), static_cast<f32>(s.center.y), static_cast<f32>(s.center.z) };
+    };
+    switch (col->shape) {
+        case COLSHAPE_CYLINDER: {
+            const Cylinder16& d = reinterpret_cast<ColliderCylinder*>(col)->dim;
+            out = { static_cast<f32>(d.pos.x), d.pos.y + d.yShift + d.height * 0.5f, static_cast<f32>(d.pos.z) };
+            return true;
+        }
+        case COLSHAPE_SPHERE:
+            sphere(reinterpret_cast<ColliderSphere*>(col)->dim.worldSphere);
+            return true;
+        case COLSHAPE_JNTSPH: {
+            auto* j = reinterpret_cast<ColliderJntSph*>(col);
+            if (element >= j->count) {
+                return false;
+            }
+            sphere(j->elements[element].dim.worldSphere);
+            return true;
+        }
+        case COLSHAPE_TRIS: {
+            auto* tris = reinterpret_cast<ColliderTris*>(col);
+            if (element >= tris->count) {
+                return false;
+            }
+            const Vec3f* v = tris->elements[element].dim.vtx;
+            out = { (v[0].x + v[1].x + v[2].x) / 3.0f, (v[0].y + v[1].y + v[2].y) / 3.0f,
+                    (v[0].z + v[1].z + v[2].z) / 3.0f };
+            return true;
+        }
+        case COLSHAPE_QUAD: {
+            const Vec3f* q = reinterpret_cast<ColliderQuad*>(col)->dim.quad;
+            out = { (q[0].x + q[1].x + q[2].x + q[3].x) / 4.0f, (q[0].y + q[1].y + q[2].y + q[3].y) / 4.0f,
+                    (q[0].z + q[1].z + q[2].z + q[3].z) / 4.0f };
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 // The quad of the hitting player's puppet Link, placed at the hit point on the real enemy for this frame's check.
 void StartRecast(uint32_t playerId, const HitMsg& m, Actor* target, int quadIndex) {
     PlayState* play = gPlayState;
@@ -558,8 +614,10 @@ void StartRecast(uint32_t playerId, const HitMsg& m, Actor* target, int quadInde
     quad->elem.atDmgInfo.effect = m.effect;
     quad->elem.atElemFlags = ATELEM_ON | ATELEM_NEAREST;
     quad->base.atFlags = AT_ON | AT_TYPE_PLAYER;
-    // A 30-unit square facing the attack, centered on the hit point.
-    const Vec3f c = { target->world.pos.x + m.hit[0], target->world.pos.y + m.hit[1], target->world.pos.z + m.hit[2] };
+    // A 30-unit square facing the attack, centered where the hit element is now (what this frame's check uses);
+    // the hit point relative to the enemy if that element cannot be found.
+    Vec3f c = { target->world.pos.x + m.hit[0], target->world.pos.y + m.hit[1], target->world.pos.z + m.hit[2] };
+    ElementCenter(target, m.colliderOffset, m.element, c);
     const Vec3f right = { Math_CosS(m.yaw) * 15.0f, 0.0f, -Math_SinS(m.yaw) * 15.0f };
     Vec3f v0 = { c.x + right.x, c.y + 15.0f, c.z + right.z };
     Vec3f v1 = { c.x - right.x, c.y + 15.0f, c.z - right.z };
