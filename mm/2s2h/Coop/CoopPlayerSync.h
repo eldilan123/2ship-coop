@@ -15,7 +15,7 @@ extern "C" {
 namespace Coop::PlayerSync {
 
 // Bump when State changes.
-constexpr uint16_t kFormatVersion = 1;
+constexpr uint16_t kFormatVersion = 2;
 constexpr uint32_t kMagic = 0x53504C50; // "PLPS"
 constexpr size_t kAnimNameSize = 96;
 
@@ -77,6 +77,16 @@ struct State {
     uint8_t pad3;
     uint16_t blastMaskTimer;
     Vec3f unk_AF0[2];
+    // What enemies read of a player besides placement, form, mask and stateFlags (milestone 5)
+    int8_t meleeWeaponState;     // The sword is out (enemies that guard or dodge react to it)
+    int8_t meleeWeaponAnimation; // Which swing
+    int8_t invincibilityTimer;
+    uint8_t csAction; // PlayerCsAction; not NONE while the player is in a cutscene
+    uint8_t unk_D57;  // A projectile was just fired
+    uint8_t pad4;
+    uint16_t focusNetId; // Enemy the player has locked on (the host's netId), 0 if none
+    int16_t health;      // In sixteenths of a heart (hearts over the name tag, milestone 5)
+    int16_t healthCapacity;
 };
 
 // One remote player's interpolated state for this frame.
@@ -84,14 +94,15 @@ struct Sample {
     State state;      // Discrete fields from the nearest state, pose interpolated
     bool teleported;  // The remote jumped far: snap instead of sliding
     uint32_t delayMs; // Current interpolation delay
+    uint32_t ageMs;   // Since the newest state arrived (a player that stopped sending: title screen, loading)
 };
 
 // Called once per frame from the coop frame hook.
 void Frame();
 // Interpolated state of every remote player that has sent one. Game thread.
 std::vector<Sample> SampleRemotes();
-// Newest state received from `playerId` (not interpolated). False if none yet.
-bool LatestState(uint32_t playerId, State& out);
+// Newest state received from `playerId` (not interpolated), and how long ago it arrived. False if none yet.
+bool LatestState(uint32_t playerId, State& out, uint32_t* ageMs = nullptr);
 // Forget every remote state (session ended).
 void Reset();
 

@@ -1847,6 +1847,11 @@ Actor* PuppetActor(uint16_t netId) {
     return puppet != sPuppets.end() && puppet->second.visible ? it->second.actor : nullptr;
 }
 
+uint16_t PuppetNetIdOf(const Actor* actor) {
+    auto it = sPuppets.find(const_cast<Actor*>(actor));
+    return it != sPuppets.end() ? it->second.netId : 0;
+}
+
 Actor* NearestEnemy(const Vec3f& from, bool testFirst) {
     // Enemies spawned at run time (the test's own) first; room enemies (the town dog...) only if there are none.
     Actor* best[2] = { nullptr, nullptr };

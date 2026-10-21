@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
+#include "CoopEnemies.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -135,6 +136,17 @@ void CaptureAndSend(Actor* actor) {
     s.unk_AF0[0] = player->unk_AF0[0];
     s.unk_AF0[1] = player->unk_AF0[1];
 
+    s.meleeWeaponState = player->meleeWeaponState;
+    s.meleeWeaponAnimation = player->meleeWeaponAnimation;
+    s.invincibilityTimer = player->invincibilityTimer;
+    s.csAction = player->csAction;
+    s.unk_D57 = player->unk_D57;
+    s.focusNetId = player->focusActor == nullptr ? 0
+                   : IsHosting()                 ? Enemies::HostNetIdOf(player->focusActor)
+                                                 : Enemies::PuppetNetIdOf(player->focusActor);
+    s.health = gSaveContext.save.saveInfo.playerData.health;
+    s.healthCapacity = gSaveContext.save.saveInfo.playerData.healthCapacity;
+
     SendBinary(IsHosting() ? kBroadcast : kHostPlayerId, Protocol::kChannelPlayerState, &s, sizeof(s));
 }
 
@@ -154,6 +166,9 @@ bool Validate(State& s, const char*& why) {
         why = "form or mask out of range";
     } else if (s.modelGroup >= PLAYER_MODELGROUP_MAX || s.face >= 16) {
         why = "model group or face out of range";
+    } else if (s.csAction >= PLAYER_CSACTION_MAX || s.health < 0 || s.healthCapacity < 0 || s.health > 20 * 16 ||
+               s.healthCapacity > 20 * 16) {
+        why = "cutscene action or health out of range";
     } else if (!IsFinite(s.pos) || !IsFinite(s.velocity) || !std::isfinite(s.speed) || !std::isfinite(s.curFrame) ||
                !std::isfinite(s.upperCurFrame) || !std::isfinite(s.unk_AB8) || !std::isfinite(s.unk_ABC) ||
                !std::isfinite(s.shapeYOffset)) {
@@ -355,6 +370,7 @@ std::vector<Sample> SampleRemotes() {
         Sample sample;
         sample.state = state;
         sample.delayMs = r.delayMs;
+        sample.ageMs = now - r.states.back().arrivalMs;
         sample.teleported = r.sampledBefore && Distance(r.lastSampledPos, state.pos) > kTeleportDistance;
         r.lastSampledPos = state.pos;
         r.sampledBefore = true;
@@ -363,12 +379,15 @@ std::vector<Sample> SampleRemotes() {
     return samples;
 }
 
-bool LatestState(uint32_t playerId, State& out) {
+bool LatestState(uint32_t playerId, State& out, uint32_t* ageMs) {
     auto it = sRemotes.find(playerId);
     if (it == sRemotes.end() || it->second.states.empty()) {
         return false;
     }
     out = it->second.states.back().state;
+    if (ageMs != nullptr) {
+        *ageMs = NowMs() - it->second.states.back().arrivalMs;
+    }
     return true;
 }
 
