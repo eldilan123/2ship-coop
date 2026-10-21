@@ -1,6 +1,7 @@
 #include "CoopCombat.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -17,6 +18,7 @@
 #include "CoopEnemyTypes.h"
 #include "CoopEnemyWire.h"
 #include "CoopPlayerSync.h"
+#include "CoopProjectiles.h"
 #include "CoopPuppet.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -48,10 +50,11 @@ enum class MsgType : uint8_t {
 
 // What on the attacking Link touched the enemy.
 enum class Kind : uint8_t {
-    Melee = 0,   // meleeWeaponQuads: sword, Goron punches, Zora fins and kicks, Deku stick
-    Body = 1,    // cylinder: Goron roll/pound/spikes, rolls, Deku spin and launch
-    Barrier = 2, // shieldCylinder: Zora barrier
-    Count = 3,
+    Melee = 0,      // meleeWeaponQuads: sword, Goron punches, Zora fins and kicks, Deku stick
+    Body = 1,       // cylinder: Goron roll/pound/spikes, rolls, Deku spin and launch
+    Barrier = 2,    // shieldCylinder: Zora barrier
+    Projectile = 3, // One of the attacker's own projectiles (CoopProjectiles); `instance` is its id
+    Count = 4,
 };
 
 enum class Outcome : uint8_t {
@@ -72,14 +75,15 @@ enum class Reason : uint8_t {
     RateLimit = 7,
     NoPuppet = 8,
     Expired = 9,
-    Count = 10,
+    NoProjectile = 10,
+    Count = 11,
 };
 
-const char* const kKindNames[] = { "melee", "body", "barrier" };
+const char* const kKindNames[] = { "melee", "body", "barrier", "projectile" };
 const char* const kOutcomeNames[] = { "applied", "bounced", "missed", "rejected" };
 const char* const kReasonNames[] = {
-    "-",         "other scene", "no such enemy", "too far",        "too old",
-    "duplicate", "bad data",    "rate limit",    "no puppet Link", "expired in queue"
+    "-",        "other scene", "no such enemy",  "too far",          "too old",           "duplicate",
+    "bad data", "rate limit",  "no puppet Link", "expired in queue", "no such projectile"
 };
 
 struct HitMsg {
@@ -117,6 +121,9 @@ constexpr uint32_t kAllowedFlags[] = {
     DMG_SWORD | DMG_GORON_PUNCH | DMG_ZORA_PUNCH | DMG_DEKU_STICK,
     DMG_GORON_POUND | DMG_GORON_SPIKES | DMG_NORMAL_ROLL | DMG_DEKU_SPIN | DMG_DEKU_LAUNCH,
     DMG_ZORA_BARRIER,
+    // Projectiles; each type is also checked against its own (CoopProjectileTypes)
+    DMG_NORMAL_ARROW | DMG_FIRE_ARROW | DMG_ICE_ARROW | DMG_LIGHT_ARROW | DMG_DEKU_BUBBLE | DMG_DEKU_NUT |
+        DMG_UNK_0x12 | DMG_EXPLOSIVES | DMG_ZORA_BOOMERANG,
 };
 constexpr uint8_t kMaxDamage = 8;
 constexpr float kMaxReach = 450.0f;     // From the attacker's puppet to the enemy (puppets lag 100-250 ms)
@@ -125,9 +132,13 @@ constexpr uint32_t kMaxAgeMs = 500;
 constexpr uint32_t kResendFrames = 3; // Continuous attacks: one event per enemy every this many frames
 constexpr double kRatePerSecond = 30.0;
 constexpr double kRateBurst = 10.0;
+// Projectile hits come in bursts: a blast stays out 10 frames and may hit each enemy around on every one of them.
+constexpr double kProjectileRatePerSecond = 90.0;
+constexpr double kProjectileRateBurst = 40.0;
 constexpr uint32_t kPredictionTimeoutMs = 500;
 constexpr uint32_t kStatsIntervalMs = 10000;
-constexpr int kQuadsPerFrame = 2; // The puppet Link's two weapon quads
+constexpr int kQuadsPerFrame = 2;    // The puppet Link's two weapon quads
+constexpr int kProjectileQuads = 16; // Host: projectile hits replayed in one frame, all players
 
 const SteadyClock::time_point sEpoch = SteadyClock::now();
 
@@ -148,11 +159,13 @@ std::vector<uint8_t> Message(MsgType type, const void* body, size_t size) {
 }
 
 struct TokenBucket {
+    double perSecond = kRatePerSecond;
+    double burst = kRateBurst;
     double tokens = kRateBurst;
     uint32_t lastMs = 0;
     bool Take(uint32_t now) {
         if (lastMs != 0) {
-            tokens = std::min(kRateBurst, tokens + (now - lastMs) * kRatePerSecond / 1000.0);
+            tokens = std::min(burst, tokens + (now - lastMs) * perSecond / 1000.0);
         }
         lastMs = now;
         if (tokens < 1.0) {
@@ -196,6 +209,7 @@ struct LastSent {
 };
 std::unordered_map<uint32_t, LastSent> sLastSent; // (netId << 8 | kind)
 TokenBucket sClientRate;
+TokenBucket sClientProjectileRate = { kProjectileRatePerSecond, kProjectileRateBurst, kProjectileRateBurst };
 std::unordered_map<uint32_t, Prediction> sPredictions; // by seq
 ClientStats sClientStats;
 uint32_t sClientStatsMs = 0;
@@ -232,6 +246,32 @@ ColliderElement* HitElement(Collider* col, uint8_t& index) {
         default:
             return nullptr;
     }
+}
+
+// Every element of the collider that took a hit this check (a blast can cover several spheres of one enemy).
+std::vector<std::pair<ColliderElement*, uint8_t>> HitElements(Collider* col) {
+    std::vector<std::pair<ColliderElement*, uint8_t>> out;
+    if (col->shape == COLSHAPE_JNTSPH) {
+        auto* j = reinterpret_cast<ColliderJntSph*>(col);
+        for (s32 i = 0; i < j->count; i++) {
+            if (j->elements[i].base.acElemFlags & ACELEM_HIT) {
+                out.push_back({ &j->elements[i].base, static_cast<uint8_t>(i) });
+            }
+        }
+    } else if (col->shape == COLSHAPE_TRIS) {
+        auto* tris = reinterpret_cast<ColliderTris*>(col);
+        for (s32 i = 0; i < tris->count; i++) {
+            if (tris->elements[i].base.acElemFlags & ACELEM_HIT) {
+                out.push_back({ &tris->elements[i].base, static_cast<uint8_t>(i) });
+            }
+        }
+    } else {
+        uint8_t index = 0;
+        if (ColliderElement* elem = HitElement(col, index)) {
+            out.push_back({ elem, index });
+        }
+    }
+    return out;
 }
 
 void Predict(Actor* actor, uint32_t seq, uint16_t netId, uint32_t now) {
@@ -285,68 +325,107 @@ void ClientDetect(uint32_t now) {
 
     std::unordered_set<uint16_t> hitThisFrame;
     Enemies::ForEachRegisteredPuppetCollider([&](uint16_t netId, Actor* actor, Collider* col) {
-        if (!(col->acFlags & AC_HIT) || col->ac != &player->actor || hitThisFrame.count(netId) != 0) {
+        if (!(col->acFlags & AC_HIT) || col->ac == nullptr) {
             return;
         }
-        uint8_t index = 0;
-        ColliderElement* elem = HitElement(col, index);
-        if (elem == nullptr || elem->acHit == nullptr || elem->acHitElem == nullptr) {
+        // The attacker is the local Link or one of its projectiles still alive (only compared until it is known to
+        // be one: a projectile deleted since is no longer in the owned list and its hit is not reported).
+        const bool byLink = col->ac == &player->actor;
+        const uint16_t projectileId = byLink ? 0 : Projectiles::OwnedId(col->ac);
+        if ((!byLink && projectileId == 0) || (byLink && hitThisFrame.count(netId) != 0)) {
             return;
         }
+        // The Link's attacks: the first element hit. A projectile: every element it covered this frame, since the
+        // enemy takes damage for each of them in one check (a blast on a Deku Baba's head and stem).
+        std::vector<std::pair<ColliderElement*, uint8_t>> elems = HitElements(col);
+        if (byLink && elems.size() > 1) {
+            elems.resize(1);
+        }
+        if (elems.empty() || elems[0].first->acHit == nullptr || elems[0].first->acHitElem == nullptr) {
+            return;
+        }
+        const ColliderElement* first = elems[0].first;
         Kind kind;
-        if (elem->acHit == &player->meleeWeaponQuads[0].base || elem->acHit == &player->meleeWeaponQuads[1].base) {
+        if (!byLink) {
+            kind = Kind::Projectile;
+            // A magic arrow's flames, a bomb's body: not an attack on enemies.
+            if ((first->acHitElem->atDmgInfo.dmgFlags & Projectiles::HitFlags(col->ac)) == 0) {
+                return;
+            }
+        } else if (first->acHit == &player->meleeWeaponQuads[0].base ||
+                   first->acHit == &player->meleeWeaponQuads[1].base) {
             kind = Kind::Melee;
-        } else if (elem->acHit == &player->cylinder.base) {
+        } else if (first->acHit == &player->cylinder.base) {
             kind = Kind::Body;
-        } else if (elem->acHit == &player->shieldCylinder.base) {
+        } else if (first->acHit == &player->shieldCylinder.base) {
             kind = Kind::Barrier;
         } else {
             return; // Shield bash and anything else: not an attack on the enemy
         }
-        if (elem->acHitElem->atDmgInfo.dmgFlags == 0) {
+        if (first->acHitElem->atDmgInfo.dmgFlags == 0) {
             return; // An attack collider left on with no damage (the end of a spin): no attack in vanilla either
         }
-        const uint16_t instance = kind == Kind::Melee ? sSwing : sBodyAttack;
-        const uint32_t key = (static_cast<uint32_t>(netId) << 8) | static_cast<uint8_t>(kind);
-        auto last = sLastSent.find(key);
-        if (last != sLastSent.end() && last->second.instance == instance &&
-            (kind == Kind::Melee || sFrame - last->second.frame < kResendFrames)) {
-            return; // Same swing already reported; continuous attacks again after a few frames
+        const uint16_t instance = kind == Kind::Projectile ? projectileId : kind == Kind::Melee ? sSwing : sBodyAttack;
+        // A projectile's hits go out on every frame the engine finds them (a blast or a fin stays out several frames;
+        // the enemy's own invulnerability decides whether a second frame counts). The Link's, once per swing.
+        if (kind != Kind::Projectile) {
+            const uint32_t key = (static_cast<uint32_t>(netId) << 8) | static_cast<uint8_t>(kind);
+            auto last = sLastSent.find(key);
+            if (last != sLastSent.end() && last->second.instance == instance &&
+                (kind == Kind::Melee || sFrame - last->second.frame < kResendFrames)) {
+                return; // Same swing already reported; continuous attacks again after a few frames
+            }
+            hitThisFrame.insert(netId);
+            if (!sClientRate.Take(now)) {
+                sClientStats.rateDropped++;
+                return;
+            }
+            sLastSent[key] = { instance, sFrame };
         }
-        hitThisFrame.insert(netId);
-        if (!sClientRate.Take(now)) {
-            sClientStats.rateDropped++;
-            return;
-        }
-        sLastSent[key] = { instance, sFrame };
 
-        const ColliderElementDamageInfoAT& at = elem->acHitElem->atDmgInfo;
-        HitMsg msg = {};
-        msg.seq = ++sSeq;
-        msg.clientMs = now;
-        msg.netId = netId;
-        msg.kind = static_cast<uint8_t>(kind);
-        msg.form = player->transformation;
-        msg.dmgFlags = at.dmgFlags;
-        msg.damage = at.damage;
-        msg.effect = at.effect;
-        msg.colliderOffset = static_cast<uint16_t>(reinterpret_cast<uint8_t*>(col) - reinterpret_cast<uint8_t*>(actor));
-        msg.element = index;
-        msg.bounced = (col->acFlags & AC_BOUNCED) ? 1 : 0;
-        msg.hit[0] = static_cast<int16_t>(elem->acDmgInfo.hitPos.x - std::lround(actor->world.pos.x));
-        msg.hit[1] = static_cast<int16_t>(elem->acDmgInfo.hitPos.y - std::lround(actor->world.pos.y));
-        msg.hit[2] = static_cast<int16_t>(elem->acDmgInfo.hitPos.z - std::lround(actor->world.pos.z));
-        msg.yaw = player->actor.shape.rot.y;
-        msg.instance = instance;
-        const std::vector<uint8_t> bytes = Message(MsgType::Hit, &msg, sizeof(msg));
-        SendBinary(kHostPlayerId, Protocol::kChannelHits, bytes.data(), bytes.size());
-        sClientStats.sent++;
-        SPDLOG_INFO("[Coop] hit-send: seq {} net {} {} {} form {} dmg 0x{:X} damage {} effect {}{}", msg.seq, netId,
-                    Enemies::TypeName(actor->id), kKindNames[msg.kind], msg.form, msg.dmgFlags, msg.damage, msg.effect,
-                    msg.bounced ? " (bounced here)" : "");
-        // Only a real hit on a collider the host had active, never a bounce or a hard collider.
-        if (!msg.bounced && !(col->acFlags & AC_HARD)) {
-            Predict(actor, msg.seq, netId, now);
+        for (const auto& [elem, index] : elems) {
+            if (elem->acHitElem == nullptr) {
+                continue;
+            }
+            if (kind == Kind::Projectile && !sClientProjectileRate.Take(now)) {
+                sClientStats.rateDropped++;
+                continue;
+            }
+            const ColliderElementDamageInfoAT& at = elem->acHitElem->atDmgInfo;
+            HitMsg msg = {};
+            msg.seq = ++sSeq;
+            msg.clientMs = now;
+            msg.netId = netId;
+            msg.kind = static_cast<uint8_t>(kind);
+            msg.form = player->transformation;
+            msg.dmgFlags = at.dmgFlags;
+            msg.damage = at.damage;
+            msg.effect = at.effect;
+            msg.colliderOffset =
+                static_cast<uint16_t>(reinterpret_cast<uint8_t*>(col) - reinterpret_cast<uint8_t*>(actor));
+            msg.element = index;
+            msg.bounced = (col->acFlags & AC_BOUNCED) ? 1 : 0;
+            msg.hit[0] = static_cast<int16_t>(elem->acDmgInfo.hitPos.x - std::lround(actor->world.pos.x));
+            msg.hit[1] = static_cast<int16_t>(elem->acDmgInfo.hitPos.y - std::lround(actor->world.pos.y));
+            msg.hit[2] = static_cast<int16_t>(elem->acDmgInfo.hitPos.z - std::lround(actor->world.pos.z));
+            msg.yaw = byLink ? player->actor.shape.rot.y : col->ac->world.rot.y;
+            msg.instance = instance;
+            const std::vector<uint8_t> bytes = Message(MsgType::Hit, &msg, sizeof(msg));
+            SendBinary(kHostPlayerId, Protocol::kChannelHits, bytes.data(), bytes.size());
+            sClientStats.sent++;
+            if (kind == Kind::Projectile) {
+                Projectiles::NoteHitSent(projectileId);
+            }
+            SPDLOG_INFO("[Coop] hit-send: seq {} net {} {} {} form {} dmg 0x{:X} damage {} effect {}{}{}", msg.seq,
+                        netId, Enemies::TypeName(actor->id), kKindNames[msg.kind], msg.form, msg.dmgFlags, msg.damage,
+                        msg.effect, msg.bounced ? " (bounced here)" : "",
+                        kind == Kind::Projectile
+                            ? fmt::format(" by {} id {}", Enemies::TypeName(col->ac->id), projectileId)
+                            : std::string());
+            // Only a real hit on a collider the host had active, never a bounce or a hard collider.
+            if (!msg.bounced && !(col->acFlags & AC_HARD)) {
+                Predict(actor, msg.seq, netId, now);
+            }
         }
     });
 
@@ -418,14 +497,18 @@ struct Queued {
 struct HostPlayer {
     uint32_t lastSeq = 0;
     std::deque<Queued> queue;
+    std::deque<Queued> projectileQueue;
+    // (netId, projectile id, clientMs) and (collider, element) of projectile hits already queued
+    std::deque<std::pair<uint64_t, uint32_t>> projectileRecent;
     std::deque<uint64_t> recent; // (netId, kind, instance) of melee hits already queued
     int64_t minOffset = INT64_MAX;
     TokenBucket rate;
+    TokenBucket projectileRate = { kProjectileRatePerSecond, kProjectileRateBurst, kProjectileRateBurst };
 };
 
 struct Recast {
     uint32_t playerId;
-    Player* puppet;
+    Player* puppet; // nullptr: a projectile hit, replayed with a quad of sProjectileQuads
     ColliderQuad* quad;
     Actor* target;
     HitMsg msg;
@@ -443,6 +526,7 @@ struct HostStats {
 
 std::unordered_map<uint32_t, HostPlayer> sHostPlayers;
 std::vector<Recast> sRecasts; // Registered before this frame's collision check; read back next frame
+std::array<ColliderQuad, kProjectileQuads> sProjectileQuads;
 HostStats sHostStats;
 uint32_t sHostStatsMs = 0;
 
@@ -476,6 +560,18 @@ Reason CheckHit(uint32_t playerId, const HitMsg& m, Actor*& target) {
     if (target == nullptr) {
         return Reason::NoEnemy;
     }
+    if (m.kind == static_cast<uint8_t>(Kind::Projectile)) {
+        Projectiles::CopyView view;
+        if (!Projectiles::HostCopy(playerId, m.instance, view)) {
+            return Reason::NoProjectile;
+        }
+        if ((m.dmgFlags & view.hitFlags) == 0) {
+            return Reason::BadData;
+        }
+        const Vec3f& p = view.lastPos;
+        const Vec3f& t = target->world.pos;
+        return Length(p.x - t.x, p.y - t.y, p.z - t.z) > view.reach ? Reason::TooFar : Reason::None;
+    }
     Player* puppet = Puppet::PuppetOf(playerId);
     if (puppet == nullptr) {
         return Reason::NoPuppet;
@@ -498,6 +594,10 @@ void HostOnHit(uint32_t from, Reader& r) {
     const uint32_t now = NowMs();
     HostPlayer& player = sHostPlayers[from];
     sHostStats.received++;
+    const bool projectile = m.kind == static_cast<uint8_t>(Kind::Projectile);
+    if (projectile) {
+        Projectiles::HostHitArrived(from, m.instance); // Counted against the hitsSent of its Kill, whatever happens
+    }
     SPDLOG_INFO("[Coop] hit-recv: player {} seq {} net {} {} dmg 0x{:X} damage {} effect {} form {}", from, m.seq,
                 m.netId, m.kind < static_cast<uint8_t>(Kind::Count) ? kKindNames[m.kind] : "?", m.dmgFlags, m.damage,
                 m.effect, m.form);
@@ -518,6 +618,21 @@ void HostOnHit(uint32_t from, Reader& r) {
     if (offset - player.minOffset > kMaxAgeMs) {
         return Reject(from, m, Reason::TooOld);
     }
+    if (projectile) {
+        // The client reports a projectile's hit on each element of an enemy at most once per frame (its clock moves
+        // every frame).
+        const std::pair<uint64_t, uint32_t> key = { (static_cast<uint64_t>(m.netId) << 48) |
+                                                        (static_cast<uint64_t>(m.instance) << 32) | m.clientMs,
+                                                    (static_cast<uint32_t>(m.colliderOffset) << 8) | m.element };
+        if (std::find(player.projectileRecent.begin(), player.projectileRecent.end(), key) !=
+            player.projectileRecent.end()) {
+            return Reject(from, m, Reason::Duplicate);
+        }
+        player.projectileRecent.push_back(key);
+        while (player.projectileRecent.size() > 128) {
+            player.projectileRecent.pop_front();
+        }
+    }
     if (m.kind == static_cast<uint8_t>(Kind::Melee)) {
         const uint64_t key =
             (static_cast<uint64_t>(m.netId) << 32) | (static_cast<uint64_t>(m.kind) << 16) | m.instance;
@@ -529,7 +644,7 @@ void HostOnHit(uint32_t from, Reader& r) {
             player.recent.pop_front();
         }
     }
-    if (!player.rate.Take(now)) {
+    if (!(projectile ? player.projectileRate : player.rate).Take(now)) {
         return Reject(from, m, Reason::RateLimit);
     }
     Actor* target = nullptr;
@@ -537,7 +652,12 @@ void HostOnHit(uint32_t from, Reader& r) {
     if (reason != Reason::None) {
         return Reject(from, m, reason);
     }
-    player.queue.push_back({ m, now });
+    if (projectile) {
+        player.projectileQueue.push_back({ m, now });
+        Projectiles::HostHitQueued(from, m.instance); // The copy stays until it is replayed
+    } else {
+        player.queue.push_back({ m, now });
+    }
 }
 
 // Current center of the element the client hit, if `offset` really is one of the enemy's colliders.
@@ -595,9 +715,23 @@ bool ElementCenter(Actor* target, uint16_t offset, uint8_t element, Vec3f& out) 
     }
 }
 
+// A 30-unit square facing the attack, centered where the hit element is now (what this frame's check uses); the hit
+// point relative to the enemy if that element cannot be found.
+void PlaceAndRegister(ColliderQuad* quad, const HitMsg& m, Actor* target) {
+    PlayState* play = gPlayState;
+    Vec3f c = { target->world.pos.x + m.hit[0], target->world.pos.y + m.hit[1], target->world.pos.z + m.hit[2] };
+    ElementCenter(target, m.colliderOffset, m.element, c);
+    const Vec3f right = { Math_CosS(m.yaw) * 15.0f, 0.0f, -Math_SinS(m.yaw) * 15.0f };
+    Vec3f v0 = { c.x + right.x, c.y + 15.0f, c.z + right.z };
+    Vec3f v1 = { c.x - right.x, c.y + 15.0f, c.z - right.z };
+    Vec3f v2 = { c.x + right.x, c.y - 15.0f, c.z + right.z };
+    Vec3f v3 = { c.x - right.x, c.y - 15.0f, c.z - right.z };
+    Collider_SetQuadVertices(quad, &v0, &v1, &v2, &v3);
+    CollisionCheck_SetAT(play, &play->colChkCtx, &quad->base);
+}
+
 // The quad of the hitting player's puppet Link, placed at the hit point on the real enemy for this frame's check.
 void StartRecast(uint32_t playerId, const HitMsg& m, Actor* target, int quadIndex) {
-    PlayState* play = gPlayState;
     Player* puppet = Puppet::PuppetOf(playerId);
     ColliderQuad* quad = &puppet->meleeWeaponQuads[quadIndex];
     Recast rc = { playerId,
@@ -614,17 +748,36 @@ void StartRecast(uint32_t playerId, const HitMsg& m, Actor* target, int quadInde
     quad->elem.atDmgInfo.effect = m.effect;
     quad->elem.atElemFlags = ATELEM_ON | ATELEM_NEAREST;
     quad->base.atFlags = AT_ON | AT_TYPE_PLAYER;
-    // A 30-unit square facing the attack, centered where the hit element is now (what this frame's check uses);
-    // the hit point relative to the enemy if that element cannot be found.
-    Vec3f c = { target->world.pos.x + m.hit[0], target->world.pos.y + m.hit[1], target->world.pos.z + m.hit[2] };
-    ElementCenter(target, m.colliderOffset, m.element, c);
-    const Vec3f right = { Math_CosS(m.yaw) * 15.0f, 0.0f, -Math_SinS(m.yaw) * 15.0f };
-    Vec3f v0 = { c.x + right.x, c.y + 15.0f, c.z + right.z };
-    Vec3f v1 = { c.x - right.x, c.y + 15.0f, c.z - right.z };
-    Vec3f v2 = { c.x + right.x, c.y - 15.0f, c.z + right.z };
-    Vec3f v3 = { c.x - right.x, c.y - 15.0f, c.z - right.z };
-    Collider_SetQuadVertices(quad, &v0, &v1, &v2, &v3);
-    CollisionCheck_SetAT(play, &play->colChkCtx, &quad->base);
+    PlaceAndRegister(quad, m, target);
+    sRecasts.push_back(rc);
+}
+
+// A projectile hit: a quad of our own whose attacker is the projectile's copy, so the enemy reacts to the arrow, the
+// bomb or the fin itself (knockback away from it, arrows that stick, explosion checks).
+void StartProjectileRecast(uint32_t playerId, const HitMsg& m, Actor* target, const Projectiles::CopyView& view,
+                           int quadIndex) {
+    PlayState* play = gPlayState;
+    ColliderQuad* quad = &sProjectileQuads[quadIndex];
+    static ColliderQuadInit sInit = {
+        { COL_MATERIAL_NONE, AT_ON | AT_TYPE_PLAYER, AC_NONE, OC1_NONE, OC2_TYPE_PLAYER, COLSHAPE_QUAD },
+        { ELEM_MATERIAL_UNK0, { 0, 0, 0 }, { 0, 0, 0 }, ATELEM_ON, ACELEM_NONE, OCELEM_NONE },
+        { { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },
+    };
+    Collider_InitQuad(play, quad);
+    Collider_SetQuad(play, quad, view.actor, &sInit);
+    quad->elem.elemMaterial = view.elemMaterial;
+    quad->elem.atElemFlags = ATELEM_ON | view.atElemFlags;
+    quad->elem.atDmgInfo.dmgFlags = m.dmgFlags;
+    quad->elem.atDmgInfo.damage = m.damage;
+    quad->elem.atDmgInfo.effect = m.effect;
+    PlaceAndRegister(quad, m, target);
+    Recast rc = {};
+    rc.playerId = playerId;
+    rc.puppet = nullptr;
+    rc.quad = quad;
+    rc.target = target;
+    rc.msg = m;
+    rc.healthBefore = static_cast<int16_t>(target->colChkInfo.health);
     sRecasts.push_back(rc);
 }
 
@@ -632,7 +785,8 @@ void StartRecast(uint32_t playerId, const HitMsg& m, Actor* target, int quadInde
 void FinishRecasts() {
     PlayState* play = gPlayState;
     for (Recast& rc : sRecasts) {
-        if (Puppet::PuppetOf(rc.playerId) != rc.puppet) {
+        const bool projectile = rc.puppet == nullptr;
+        if (!projectile && Puppet::PuppetOf(rc.playerId) != rc.puppet) {
             continue; // That player's puppet is gone (left, changed form or scene)
         }
         const uint8_t atFlags = rc.quad->base.atFlags;
@@ -646,12 +800,19 @@ void FinishRecasts() {
         const int16_t after = alive == rc.target ? static_cast<int16_t>(rc.target->colChkInfo.health) : 0;
         const bool died = alive != rc.target || after == 0;
         Collider_ResetQuadAT(play, &rc.quad->base);
-        rc.quad->base.atFlags = rc.savedAtFlags;
-        rc.quad->elem.atElemFlags = rc.savedAtElemFlags;
-        rc.quad->elem.atDmgInfo = rc.savedDmg;
-        SPDLOG_INFO("[Coop] hit-apply: player {} seq {} net {} {}: {} (health {} -> {}{})", rc.playerId, rc.msg.seq,
+        if (projectile) {
+            rc.quad->base.atFlags = AT_NONE;
+            rc.quad->base.actor = nullptr;
+            Projectiles::HostHitFinished(rc.playerId, rc.msg.instance);
+        } else {
+            rc.quad->base.atFlags = rc.savedAtFlags;
+            rc.quad->elem.atElemFlags = rc.savedAtElemFlags;
+            rc.quad->elem.atDmgInfo = rc.savedDmg;
+        }
+        SPDLOG_INFO("[Coop] hit-apply: player {} seq {} net {} {}: {} (health {} -> {}{}){}", rc.playerId, rc.msg.seq,
                     rc.msg.netId, Enemies::TypeName(rc.target->id), kOutcomeNames[static_cast<uint8_t>(outcome)],
-                    rc.healthBefore, after, died ? ", died" : "");
+                    rc.healthBefore, after, died ? ", died" : "",
+                    projectile ? fmt::format(" by projectile id {}", rc.msg.instance) : std::string());
         SendResult(rc.playerId, rc.msg, outcome, Reason::None, rc.healthBefore, after, died);
     }
     sRecasts.clear();
@@ -684,6 +845,42 @@ void HostFrame(uint32_t now) {
             StartRecast(playerId, q.msg, target, used++);
         }
     }
+    // Projectile hits, in order; one per enemy per frame (an enemy takes one hit per frame, and the client found
+    // them in different frames even when they arrive together).
+    int quads = 0;
+    std::unordered_map<Actor*, std::pair<uint32_t, uint32_t>> targetsUsed; // -> (player, client frame time)
+    for (auto& [playerId, player] : sHostPlayers) {
+        std::deque<Queued> later;
+        while (!player.projectileQueue.empty()) {
+            const Queued q = player.projectileQueue.front();
+            player.projectileQueue.pop_front();
+            if (now - q.arrivalMs > kMaxAgeMs) {
+                Reject(playerId, q.msg, Reason::Expired);
+                Projectiles::HostHitFinished(playerId, q.msg.instance);
+                continue;
+            }
+            Actor* target = nullptr;
+            const Reason reason = CheckHit(playerId, q.msg, target);
+            Projectiles::CopyView view;
+            if (reason != Reason::None || !Projectiles::HostCopy(playerId, q.msg.instance, view)) {
+                Reject(playerId, q.msg, reason != Reason::None ? reason : Reason::NoProjectile);
+                Projectiles::HostHitFinished(playerId, q.msg.instance);
+                continue;
+            }
+            // Hits the client found in the same frame (several elements of one enemy) are replayed together, so the
+            // enemy adds their damage as the engine does; hits from later frames wait for a later frame.
+            auto used = targetsUsed.find(target);
+            const bool sameFrame =
+                used != targetsUsed.end() && used->second == std::make_pair(playerId, q.msg.clientMs);
+            if (quads >= kProjectileQuads || (used != targetsUsed.end() && !sameFrame)) {
+                later.push_back(q); // Next frame, in order
+                continue;
+            }
+            targetsUsed[target] = { playerId, q.msg.clientMs };
+            StartProjectileRecast(playerId, q.msg, target, view, quads++);
+        }
+        player.projectileQueue = std::move(later);
+    }
 }
 
 void HostStatsLine(uint32_t now) {
@@ -714,9 +911,33 @@ void HostStatsLine(uint32_t now) {
 // so a test can compare them with a client's hits.
 std::unordered_map<uint16_t, uint16_t> sHostContactInstance;
 
+std::unordered_set<uint32_t> sHostProjectileContacts; // (netId << 16 | projectile id)
+
 void LogHostContact(Collider* at, Collider* ac) {
     Player* player = GET_PLAYER(gPlayState);
-    if (!GetLaunchOptions().testEnemyLog || player == nullptr || at->actor != &player->actor || ac->actor == nullptr) {
+    if (!GetLaunchOptions().testEnemyLog || player == nullptr || ac->actor == nullptr || at->actor == nullptr) {
+        return;
+    }
+    if (at->actor != &player->actor) {
+        // The host's own projectiles (shared ones, and hits that can damage enemies).
+        const uint16_t projectileId = Projectiles::IsCopy(at->actor) ? 0 : Projectiles::OwnedId(at->actor);
+        const uint16_t netId = Enemies::HostNetIdOf(ac->actor);
+        const ColliderElement* elem = nullptr;
+        if (at->shape == COLSHAPE_QUAD) {
+            elem = &reinterpret_cast<ColliderQuad*>(at)->elem;
+        } else if (at->shape == COLSHAPE_CYLINDER) {
+            elem = &reinterpret_cast<ColliderCylinder*>(at)->elem;
+        } else if (at->shape == COLSHAPE_JNTSPH && reinterpret_cast<ColliderJntSph*>(at)->count > 0) {
+            elem = &reinterpret_cast<ColliderJntSph*>(at)->elements[0].base;
+        }
+        if (projectileId == 0 || netId == 0 || elem == nullptr ||
+            (elem->atDmgInfo.dmgFlags & Projectiles::HitFlags(at->actor)) == 0 ||
+            !sHostProjectileContacts.insert((static_cast<uint32_t>(netId) << 16) | projectileId).second) {
+            return;
+        }
+        SPDLOG_INFO("[Coop] host-contact: net {} {} projectile dmg 0x{:X} by {} id {}", netId,
+                    Enemies::TypeName(ac->actor->id), elem->atDmgInfo.dmgFlags, Enemies::TypeName(at->actor->id),
+                    projectileId);
         return;
     }
     const uint16_t netId = Enemies::HostNetIdOf(ac->actor);
@@ -743,10 +964,18 @@ void OnAcCollision(GIVanillaBehavior, bool* should, va_list originalArgs) {
     if (IsHosting()) {
         LogHostContact(at, ac);
     }
+    bool recast = false;
     for (const Recast& rc : sRecasts) {
-        if (at == &rc.quad->base && ac->actor != rc.target) {
-            *should = false;
+        if (at == &rc.quad->base) {
+            recast = true;
+            if (ac->actor != rc.target) {
+                *should = false;
+            }
         }
+    }
+    // A copy of another player's projectile never hits anything by itself: its hits are the owner's to report.
+    if (!recast && Projectiles::IsCopy(at->actor)) {
+        *should = false;
     }
 }
 
@@ -781,7 +1010,9 @@ void OnPlayDestroy() {
     sRecasts.clear();
     for (auto& [playerId, player] : sHostPlayers) {
         player.queue.clear();
+        player.projectileQueue.clear();
     }
+    sHostProjectileContacts.clear();
     sPredictions.clear();
 }
 
@@ -843,6 +1074,13 @@ void TestFuzz() {
     m.damage = 1;
     m.hit[0] = 30000;
     send("hit point 30000 units away", Message(MsgType::Hit, &m, sizeof(m)));
+    m.hit[0] = 0;
+    m.kind = static_cast<uint8_t>(Kind::Projectile);
+    m.dmgFlags = DMG_SWORD;
+    send("projectile hit with sword damage", Message(MsgType::Hit, &m, sizeof(m)));
+    m.dmgFlags = DMG_NORMAL_ARROW;
+    m.instance = 0xFFFF;
+    send("hit by a projectile that does not exist", Message(MsgType::Hit, &m, sizeof(m)));
     ResultMsg res = {};
     res.outcome = 9;
     send("result with an unknown outcome", Message(MsgType::Result, &res, sizeof(res)));
