@@ -25,8 +25,9 @@ uint16_t HostNetIdOf(const Actor* actor);
 void ForEachRegisteredPuppetCollider(const std::function<void(uint16_t netId, Actor* actor, Collider* col)>& fn);
 // Client: the shown puppet with this netId, or null.
 Actor* PuppetActor(uint16_t netId);
-// Test only: the nearest live enemy (host) or shown puppet (client) to `from`, or null.
-Actor* NearestEnemy(const Vec3f& from);
+// The nearest live enemy (host) or shown puppet (client) to `from`, or null. `testFirst` (tests): enemies spawned at
+// run time are preferred over room enemies.
+Actor* NearestEnemy(const Vec3f& from, bool testFirst = true);
 
 // Test only (host): spawns an enemy in front of the local Link. `index` spreads several spawns made at once.
 void TestSpawn(int16_t actorId, uint16_t params, int index);

@@ -1847,12 +1847,12 @@ Actor* PuppetActor(uint16_t netId) {
     return puppet != sPuppets.end() && puppet->second.visible ? it->second.actor : nullptr;
 }
 
-Actor* NearestEnemy(const Vec3f& from) {
+Actor* NearestEnemy(const Vec3f& from, bool testFirst) {
     // Enemies spawned at run time (the test's own) first; room enemies (the town dog...) only if there are none.
     Actor* best[2] = { nullptr, nullptr };
     float bestDistance[2] = { 1e9f, 1e9f };
     auto consider = [&](Actor* actor, bool dynamic) {
-        const int i = dynamic ? 0 : 1;
+        const int i = (dynamic || !testFirst) ? 0 : 1;
         const float d = Distance(from, actor->world.pos);
         if (d < bestDistance[i]) {
             bestDistance[i] = d;

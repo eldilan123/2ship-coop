@@ -84,6 +84,11 @@ struct LaunchOptions {
         int atSeconds;
     };
     std::vector<TimedAttack> testAttack;
+    // Both: fire a projectile from the local Link at the nearest enemy (CoopProjectiles::TestShoot): `button` is the
+    // kind (arrow, fire, ice, light, bubble, nut, bomb, chu, fins); holdMs is unused.
+    std::vector<TimedAttack> testShoot;
+    // Both: first id of this game's projectile counter (tests the wrap past 65535)
+    int testProjectileFirstId = 0;
     // Parse problems, logged once the logger exists
     std::vector<std::string> warnings;
 };

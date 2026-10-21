@@ -12,6 +12,7 @@
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopPlayerSync.h"
+#include "CoopProjectiles.h"
 #include "CoopPuppet.h"
 #include "CoopSession.h"
 #include "CoopTest.h"
@@ -139,6 +140,8 @@ void OnFrame() {
     Puppet::Frame();
     // Before the enemy puppets register their colliders again: hits on them are read from last frame's check.
     Combat::Frame();
+    // After the hits: a projectile's hits found this frame go out before its Kill.
+    Projectiles::Frame();
     Enemies::Frame();
     Test::Frame();
     LogNetStats();

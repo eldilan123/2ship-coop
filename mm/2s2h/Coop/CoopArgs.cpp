@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <fmt/format.h>
 #include "Coop.h"
 
@@ -211,8 +212,9 @@ bool ParseSweep(const char* text, std::vector<LaunchOptions::SweepEntry>& out, i
     return !out.empty();
 }
 
-// "<button>[:<count>[:<intervalMs>[:<holdMs>[:<approach>]]]]@<seconds>"
-bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out) {
+// "<button>[:<count>[:<intervalMs>[:<holdMs>[:<approach>]]]]@<seconds>"; for --coop-test-shoot the button is the
+// projectile kind.
+bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out, bool shoot = false) {
     const char* at = text != nullptr ? std::strrchr(text, '@') : nullptr;
     long seconds = 0;
     if (at == nullptr || !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
@@ -227,7 +229,11 @@ bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out) {
         pos = colon + 1;
     }
     const std::string& button = parts[0];
-    if (button != "b" && button != "a" && button != "z" && button != "r" && button != "roll") {
+    static const char* const kButtons[] = { "b", "a", "z", "r", "roll" };
+    static const char* const kShots[] = { "arrow", "fire", "ice", "light", "bubble", "nut", "bomb", "chu", "fins" };
+    const bool known = shoot ? std::find(std::begin(kShots), std::end(kShots), button) != std::end(kShots)
+                             : std::find(std::begin(kButtons), std::end(kButtons), button) != std::end(kButtons);
+    if (!known) {
         return false;
     }
     long values[4] = { 1, 700, 100, 0 };
@@ -331,6 +337,24 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.warnings.push_back(fmt::format(
                     "--coop-test-attack: '{}' is not <b|a|z|r|roll>[:count[:intervalMs[:holdMs[:approach]]]]@<seconds>",
                     value));
+            }
+        } else if (arg == "--coop-test-shoot") {
+            const char* value = takeValue();
+            LaunchOptions::TimedAttack timed;
+            if (value != nullptr && ParseAttack(value, timed, true)) {
+                options.testShoot.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-shoot: '{}' is not <arrow|fire|ice|light|bubble|nut|bomb|chu|fins>[:count"
+                                "[:intervalMs[:unused[:approach]]]]@<seconds>",
+                                value));
+            }
+        } else if (arg == "--coop-test-proj-first-id") {
+            const char* value = takeValue();
+            if (value != nullptr && ParseInt(value, 1, 0xFFFF, number)) {
+                options.testProjectileFirstId = static_cast<int>(number);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-test-proj-first-id: '{}' is not 1-65535", value));
             }
         } else if (arg == "--coop-test-net-delay") {
             const char* value = takeValue();
