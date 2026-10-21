@@ -1075,6 +1075,12 @@ bool HostCopy(uint32_t owner, uint16_t id, CopyView& out) {
     return true;
 }
 
+Actor* CopyActor(uint32_t owner, uint16_t id) {
+    auto it = sCopies.find(Key(owner, id));
+    return it != sCopies.end() && it->second.actor != nullptr && it->second.actor->update != nullptr ? it->second.actor
+                                                                                                     : nullptr;
+}
+
 void HostHitArrived(uint32_t owner, uint16_t id) {
     auto it = sCopies.find(Key(owner, id));
     if (it != sCopies.end()) {

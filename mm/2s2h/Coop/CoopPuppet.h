@@ -6,6 +6,8 @@
 // moved to ACTORCAT_NPC so it is never GET_PLAYER. Its Player update never runs: the network pose is applied instead.
 #include <cstdint>
 
+#define CVAR_COOP_SHOW_HEARTS "gCoop.ShowHearts" // 1: hearts over each remote player's name (default); 0: name only
+
 extern "C" {
 #include "z64.h"
 }
@@ -16,6 +18,8 @@ namespace Coop::Puppet {
 void Frame();
 // The puppet Link of a remote player in this scene, or null.
 Player* PuppetOf(uint32_t playerId);
+// The remote player a puppet actor stands for, or 0 if the actor is not a puppet.
+uint32_t PlayerIdOf(const Actor* actor);
 
 } // namespace Coop::Puppet
 

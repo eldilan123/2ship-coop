@@ -26,6 +26,13 @@ namespace Coop::Targeting {
 void Frame();
 // The player id an enemy is after (the host's id when it is after the host or not handled).
 uint32_t TargetOf(const Actor* enemy);
+// Host: the enemy's attack hit `playerId`'s puppet this frame; its next update deals with that player (the player
+// view goes to it even if its target is someone else), as it would with the one Link it hit. Not for the types that
+// stay on the host.
+void NoteVictim(const Actor* enemy, uint32_t playerId);
+// Whether this enemy type stays on the host (grabs, paralyzes, steals, cutscenes): it must not hit a puppet either,
+// its follow-up would act on the host's Link.
+bool StaysOnHost(const Actor* enemy);
 
 } // namespace Coop::Targeting
 

@@ -18,6 +18,7 @@
 #include "CoopEnemyTypes.h"
 #include "CoopEnemyWire.h"
 #include "CoopPlayerSync.h"
+#include "CoopPlayerHits.h"
 #include "CoopProjectiles.h"
 #include "CoopPuppet.h"
 #include "CoopSession.h"
@@ -955,12 +956,26 @@ void LogHostContact(Collider* at, Collider* ac) {
 }
 
 // Only the replayed quad's own target may take its hit.
+// --coop-test-hit: one quad of the local Link on the nearest enemy, registered for this frame's check.
+ColliderQuad sTestQuad;
+Actor* sTestTarget = nullptr;
+
 void OnAcCollision(GIVanillaBehavior, bool* should, va_list originalArgs) {
     va_list args;
     va_copy(args, originalArgs);
     Collider* at = va_arg(args, Collider*);
     Collider* ac = va_arg(args, Collider*);
+    ColliderElement* atElem = va_arg(args, ColliderElement*);
     va_end(args);
+    // Enemies hitting the other players' puppets (host) and the client's replays of those hits.
+    PlayerHits::OnAcCollision(at, ac, atElem, should);
+    if (!*should) {
+        return;
+    }
+    if (at == &sTestQuad.base && ac->actor != sTestTarget) {
+        *should = false;
+        return;
+    }
     if (IsHosting()) {
         LogHostContact(at, ac);
     }
@@ -999,6 +1014,8 @@ void OnHitMessage(uint32_t from, const std::vector<uint8_t>& bytes) {
         }
     } else if (!IsHosting() && type == MsgType::Result && from == kHostPlayerId) {
         ClientOnResult(r);
+    } else if (!IsHosting() && header.type == PlayerHits::kMsgPlayerHit && from == kHostPlayerId) {
+        PlayerHits::ClientOnPlayerHit(r);
     } else {
         SPDLOG_WARN("[Coop] Dropping hit message from {}: unexpected type {}", from, header.type);
         NoteDroppedMessage();
@@ -1046,6 +1063,53 @@ void Frame() {
         ClientDetect(now);
     }
     ClientStatsLine(now);
+}
+
+std::vector<uint8_t> HitsMessage(uint8_t type, const void* body, size_t size) {
+    return Message(static_cast<MsgType>(type), body, size);
+}
+
+void TestHitNearest(uint32_t dmgFlags) {
+    PlayState* play = gPlayState;
+    Player* player = GET_PLAYER(play);
+    // The nearest enemy actor, tracked or not (with no client the host tracks nothing).
+    Actor* target = nullptr;
+    float best = 1e9f;
+    for (Actor* a = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; a != nullptr && player != nullptr; a = a->next) {
+        const float d = Actor_WorldDistXYZToActor(&player->actor, a);
+        if (a->update != nullptr && a->init == nullptr && a->draw != nullptr && d < best) {
+            best = d;
+            target = a;
+        }
+    }
+    if (target == nullptr || !IsHosting()) {
+        SPDLOG_INFO("[Coop] TEST: hit: no enemy");
+        return;
+    }
+    static ColliderQuadInit sInit = {
+        { COL_MATERIAL_NONE, AT_ON | AT_TYPE_PLAYER, AC_NONE, OC1_NONE, OC2_TYPE_PLAYER, COLSHAPE_QUAD },
+        { ELEM_MATERIAL_UNK2, { 0, 0, 0 }, { 0, 0, 0 }, ATELEM_ON | ATELEM_NEAREST, ACELEM_NONE, OCELEM_NONE },
+        { { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },
+    };
+    Collider_InitQuad(play, &sTestQuad);
+    Collider_SetQuad(play, &sTestQuad, &player->actor, &sInit);
+    sTestQuad.elem.atDmgInfo.dmgFlags = dmgFlags;
+    sTestQuad.elem.atDmgInfo.damage = 1;
+    sTestTarget = target;
+    // A 60-unit square between its feet and its focus, facing the Link.
+    Vec3f c = { (target->world.pos.x + target->focus.pos.x) * 0.5f,
+                (target->world.pos.y + target->focus.pos.y) * 0.5f + 10.0f,
+                (target->world.pos.z + target->focus.pos.z) * 0.5f };
+    const s16 yaw = Math_Vec3f_Yaw(&player->actor.world.pos, &c);
+    const Vec3f right = { Math_CosS(yaw) * 30.0f, 0.0f, -Math_SinS(yaw) * 30.0f };
+    Vec3f v0 = { c.x + right.x, c.y + 30.0f, c.z + right.z };
+    Vec3f v1 = { c.x - right.x, c.y + 30.0f, c.z - right.z };
+    Vec3f v2 = { c.x + right.x, c.y - 30.0f, c.z + right.z };
+    Vec3f v3 = { c.x - right.x, c.y - 30.0f, c.z - right.z };
+    Collider_SetQuadVertices(&sTestQuad, &v0, &v1, &v2, &v3);
+    CollisionCheck_SetAT(play, &play->colChkCtx, &sTestQuad.base);
+    SPDLOG_INFO("[Coop] TEST: hit {} with 0x{:X} (health {})", Enemies::TypeName(target->id), dmgFlags,
+                target->colChkInfo.health);
 }
 
 void TestFuzz() {

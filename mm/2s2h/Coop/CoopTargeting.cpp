@@ -1,5 +1,6 @@
 #include "CoopTargeting.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -11,6 +12,7 @@
 #include "CoopArgs.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
+#include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
 #include "CoopPuppet.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -87,6 +89,7 @@ struct Stats {
     uint32_t windows = 0;
     uint32_t restores = 0; // Safety nets that had to put the player list back (must stay 0)
     uint32_t maxSwitchesOneEnemy = 0;
+    uint32_t awake = 0; // Enemy updates that ran only because a remote player was near (KeepAwakeNearRemotes)
 };
 Stats sStats;
 uint32_t sStatsMs = 0;
@@ -98,6 +101,7 @@ struct View {
     Actor* enemy = nullptr; // Non-null while an enemy's update sees a puppet as "the player"
     Actor* savedHead = nullptr;
     Player* puppet = nullptr;
+    uint32_t playerId = 0;
     // Puppet fields set only for the window (its own draw must not see them)
     s8 meleeWeaponState = 0;
     s8 meleeWeaponAnimation = 0;
@@ -120,6 +124,14 @@ void EndView() {
     p->csAction = sView.csAction;
     p->unk_D57 = sView.unk_D57;
     p->focusActor = sView.focusActor;
+    // A knockback the enemy asked for during its update (func_800B8D10 writes these on "the player"): the puppet
+    // never takes it, its player does.
+    if (p->unk_B75 != 0 && sView.enemy != nullptr) {
+        PlayerHits::HostDirectKnockback(sView.playerId, sView.enemy, p->unk_B75, p->unk_B74, p->unk_B76, p->unk_B78,
+                                        p->unk_B7C);
+    }
+    p->unk_B74 = 0;
+    p->unk_B75 = 0;
     sView = {};
 }
 
@@ -134,9 +146,12 @@ void RestoreLeftover(const char* where) {
     EndView();
 }
 
-void BeginView(Actor* enemy, Player* puppet, const PlayerSync::State& s) {
+void BeginView(Actor* enemy, Player* puppet, uint32_t playerId, const PlayerSync::State& s) {
     PlayState* play = gPlayState;
     sView.enemy = enemy;
+    sView.playerId = playerId;
+    puppet->unk_B74 = 0;
+    puppet->unk_B75 = 0;
     sView.savedHead = play->actorCtx.actorLists[ACTORCAT_PLAYER].first;
     sView.puppet = puppet;
     sView.meleeWeaponState = puppet->meleeWeaponState;
@@ -154,6 +169,32 @@ void BeginView(Actor* enemy, Player* puppet, const PlayerSync::State& s) {
     play->actorCtx.actorLists[ACTORCAT_PLAYER].first = &puppet->actor;
     sStats.windows++;
 }
+
+// Damage an enemy deals with damagePlayer during its update: while it sees a puppet, its player gets it, not the
+// local Link (Player_InflictDamage changes the local health).
+s32 (*sOriginalDamagePlayer)(PlayState*, s32) = nullptr;
+
+s32 DamagePlayer(PlayState* play, s32 damage) {
+    if (sView.enemy != nullptr) {
+        PlayerHits::HostDirectDamage(sView.playerId, sView.enemy, damage);
+        return true;
+    }
+    return sOriginalDamagePlayer != nullptr ? sOriginalDamagePlayer(play, damage) : false;
+}
+
+void WrapDamagePlayer() {
+    PlayState* play = gPlayState;
+    if (play == nullptr || play->damagePlayer == nullptr || play->damagePlayer == DamagePlayer) {
+        return;
+    }
+    sOriginalDamagePlayer = play->damagePlayer; // Set again by every Player_Init of the local Link
+    play->damagePlayer = DamagePlayer;
+}
+
+// Enemies whose AT hit a puppet this frame (CoopPlayerHits): their next update deals with that player.
+std::unordered_map<const Actor*, uint32_t> sVictims;
+// Enemies drawn this frame only because a remote player is near (KeepAwakeNearRemotes).
+std::vector<Actor*> sForcedDraw;
 
 // MARK: - Choosing
 
@@ -278,12 +319,19 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     }
     const std::vector<Candidate> candidates = Candidates();
     Choose(actor, t, candidates, NowMs());
-    if (t.playerId == kHostPlayerId) {
+    // The player its attack just hit, for this update (its recoil, a follow-up knockback), whoever its target is.
+    uint32_t viewId = t.playerId;
+    auto victim = sVictims.find(actor);
+    if (victim != sVictims.end()) {
+        viewId = victim->second;
+        sVictims.erase(victim);
+    }
+    if (viewId == kHostPlayerId) {
         return; // The engine already measured everything against the host's Link
     }
-    Player* puppet = Puppet::PuppetOf(t.playerId);
+    Player* puppet = Puppet::PuppetOf(viewId);
     PlayerSync::State s;
-    if (puppet == nullptr || !PlayerSync::LatestState(t.playerId, s)) {
+    if (puppet == nullptr || !PlayerSync::LatestState(viewId, s)) {
         return;
     }
     // What Actor_UpdateActor worked out against the local Link, now against the target.
@@ -292,7 +340,7 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     actor->xyzDistToPlayerSq = SQ(actor->xzDistToPlayer) + SQ(actor->playerHeightRel);
     actor->yawTowardsPlayer = Actor_WorldYawTowardActor(actor, &puppet->actor);
     actor->isLockedOn = s.focusNetId != 0 && Enemies::HostNetIdOf(actor) == s.focusNetId;
-    BeginView(actor, puppet, s);
+    BeginView(actor, puppet, viewId, s);
 }
 
 void OnActorUpdate(Actor* actor) {
@@ -307,11 +355,15 @@ void OnPlayDrawWorldStart() {
 
 void OnActorDestroy(Actor* actor) {
     sTargets.erase(actor);
+    sForcedDraw.erase(std::remove(sForcedDraw.begin(), sForcedDraw.end(), actor), sForcedDraw.end());
+    sVictims.erase(actor);
 }
 
 void OnPlayDestroy() {
     RestoreLeftover("the scene's end");
     sTargets.clear();
+    sVictims.clear();
+    sForcedDraw.clear();
 }
 
 void StatsAndSamples(uint32_t now) {
@@ -326,9 +378,9 @@ void StatsAndSamples(uint32_t now) {
         }
         if (!sTargets.empty() || sStats.windows > 0 || sStats.restores > 0) {
             SPDLOG_INFO("[Coop] enemy-target-stats: {} enemies (on the host {}, on other players {}); switches {} "
-                        "(most for one enemy {}); view windows {}; view restores {}",
+                        "(most for one enemy {}); view windows {}; view restores {}; kept awake near other players {}",
                         sTargets.size(), onHost, onOthers, sStats.switches, sStats.maxSwitchesOneEnemy, sStats.windows,
-                        sStats.restores);
+                        sStats.restores, sStats.awake);
         }
         sStats = {};
     }
@@ -366,14 +418,83 @@ void RegisterTargetingHooks() {
 
 } // namespace
 
+// The engine updates an actor only if the host's camera saw it in the last draw (ACTOR_FLAG_INSIDE_CULLING_VOLUME,
+// set by Actor_DrawAll) or it never culls, and draws it only if the camera sees it now. An enemy next to a remote
+// player but off the host's screen would stand frozen, and an enemy whose attack colliders follow its skeleton (set
+// while it is drawn: a Wolfos's claws) would attack with colliders left where it was last drawn. So before this
+// frame's update, an enemy within its own culling distance of a remote player (as that player's camera would see it)
+// counts as seen, and is drawn this frame even off the host's screen (the GPU clips it). The draw flag is put back at
+// the start of the next frame; the seen flag is set again by every draw. Enemies that stay on the host are left as
+// they are, and so are the actors enemies spawn (projectiles).
+void PutBackForcedDraws() {
+    for (Actor* actor : sForcedDraw) {
+        actor->flags &= ~ACTOR_FLAG_DRAW_CULLING_DISABLED;
+    }
+    sForcedDraw.clear();
+}
+
+void KeepAwakeNearRemotes() {
+    PutBackForcedDraws();
+    PlayState* play = gPlayState;
+    if (play == nullptr || gSaveContext.gameMode != GAMEMODE_NORMAL || play->soaringCsOrSoTCsPlaying ||
+        LocalLink() == nullptr) {
+        return;
+    }
+    std::vector<Candidate> remotes = Candidates();
+    remotes.erase(
+        std::remove_if(remotes.begin(), remotes.end(), [](const Candidate& c) { return c.playerId == kHostPlayerId; }),
+        remotes.end());
+    if (remotes.empty()) {
+        return;
+    }
+    for (int category = 0; category < ACTORCAT_MAX; category++) {
+        for (Actor* actor = play->actorCtx.actorLists[category].first; actor != nullptr; actor = actor->next) {
+            if (actor->flags & ACTOR_FLAG_INSIDE_CULLING_VOLUME) {
+                continue; // The host sees it: updated and drawn as usual
+            }
+            const Actor* enemy = actor->category == ACTORCAT_ENEMY                                       ? actor
+                                 : actor->parent != nullptr && actor->parent->category == ACTORCAT_ENEMY ? actor->parent
+                                                                                                         : nullptr;
+            if (enemy == nullptr || kHostOnly.count(enemy->id) != 0) {
+                continue;
+            }
+            for (const Candidate& c : remotes) {
+                if (Actor_WorldDistXYZToActor(actor, &c.player->actor) <= actor->cullingVolumeDistance) {
+                    actor->flags |= ACTOR_FLAG_INSIDE_CULLING_VOLUME;
+                    if (!(actor->flags & ACTOR_FLAG_DRAW_CULLING_DISABLED)) {
+                        actor->flags |= ACTOR_FLAG_DRAW_CULLING_DISABLED;
+                        sForcedDraw.push_back(actor);
+                    }
+                    sStats.awake++;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 void Frame() {
     RestoreLeftover("the end of the frame");
     const uint32_t now = NowMs();
     if (!IsHosting()) {
         sTargets.clear();
+        sVictims.clear();
+        PutBackForcedDraws();
         return;
     }
+    WrapDamagePlayer();
+    KeepAwakeNearRemotes();
     StatsAndSamples(now);
+}
+
+void NoteVictim(const Actor* enemy, uint32_t playerId) {
+    if (enemy->category == ACTORCAT_ENEMY && kHostOnly.count(enemy->id) == 0) {
+        sVictims[enemy] = playerId;
+    }
+}
+
+bool StaysOnHost(const Actor* enemy) {
+    return enemy->category == ACTORCAT_ENEMY && kHostOnly.count(enemy->id) != 0;
 }
 
 uint32_t TargetOf(const Actor* enemy) {

@@ -45,6 +45,8 @@ struct CopyView {
     uint8_t atElemFlags = 0;
 };
 bool HostCopy(uint32_t owner, uint16_t id, CopyView& out);
+// Any side: the copy of `owner`'s projectile `id` here, or nullptr.
+Actor* CopyActor(uint32_t owner, uint16_t id);
 // Host: every hit event received for the projectile (applied or not) counts against the hitsSent of its Kill;
 // the copy is kept while hits for it wait in the queue or are being replayed.
 void HostHitArrived(uint32_t owner, uint16_t id);

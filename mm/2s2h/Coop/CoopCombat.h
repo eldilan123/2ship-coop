@@ -1,7 +1,9 @@
 #ifndef COOP_COMBAT_H
 #define COOP_COMBAT_H
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 // A client's hits on enemy puppets (binary channel kChannelHits).
 //
@@ -24,6 +26,11 @@ namespace Coop::Combat {
 void Frame();
 // Test only (both): sends malformed hit messages to the other side.
 void TestFuzz();
+// A message of the hits channel (magic, format and `type`), for the other modules that use it.
+std::vector<uint8_t> HitsMessage(uint8_t type, const void* body, size_t size);
+// Test only (host): hits the nearest enemy once with these damage flags, as the local Link would (resolved by the
+// engine against whatever the enemy registered).
+void TestHitNearest(uint32_t dmgFlags);
 
 } // namespace Coop::Combat
 

@@ -1,13 +1,17 @@
 #include "CoopPuppet.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
+#include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopArgs.h"
+#include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
 #include "CoopSession.h"
 #include "2s2h/BenPort.h"
@@ -40,6 +44,13 @@ struct Entry {
     uint8_t modelGroup = 0xFF;
     PlayerSync::Sample sample = {};
     bool haveSample = false;
+    // AC flags of the body cylinder and the shield quad as Player_Init set them (switched off while not hittable).
+    u8 cylinderAcFlags = AC_NONE;
+    u8 shieldAcFlags = AC_NONE;
+    // What the hearts tag over this puppet shows now (-1: none).
+    const Player* heartsActor = nullptr;
+    int16_t heartsHealth = -1;
+    int16_t heartsCapacity = -1;
 };
 
 // Puppet per remote player id, and the hooks registered for each puppet actor.
@@ -58,6 +69,8 @@ bool sSpawning = false;
 std::unordered_set<std::string> sAnimNames;
 
 constexpr const char* kNameTagTag = "coop-puppet";
+// One hearts tag per player, so it can be replaced alone (NameTag keeps the pointer: these strings never move).
+std::unordered_map<uint32_t, std::string> sHeartsTags;
 constexpr uint32_t kStaleMs = 2000;
 
 bool InGameplay() {
@@ -153,18 +166,14 @@ void ApplyPose(Entry& entry) {
     }
 }
 
-// The puppet's Player update never runs, so its body collider is registered here. OC only (bodies push each other);
-// AT and AC were switched off at spawn, so it neither deals nor takes damage. Skipped whenever either Link is in a
-// cutscene (doors are cutscenes), talking, or a scene change is running, so nobody gets stuck in a doorway.
-void RegisterBodyCollision(Entry& entry) {
+// The puppet's Player update never runs, so its body collider is registered here. OC: bodies push each other,
+// skipped whenever either Link is in a cutscene (doors are cutscenes), talking, or a scene change is running, so
+// nobody gets stuck in a doorway. AC (host only, milestone 5): enemies hit the body cylinder, and the shield quad the
+// draw code registers while shielding, only while that player may be hurt (CoopPlayerHits); the hit goes to the
+// player, the puppet itself never takes damage.
+void RegisterBodyCollision(Entry& entry, uint32_t playerId) {
     Player* p = entry.actor;
     Player* local = GET_PLAYER(gPlayState);
-    const u32 busy = PLAYER_STATE1_20000000 | PLAYER_STATE1_TALKING | PLAYER_STATE1_DEAD;
-    if ((local->stateFlags1 & busy) || (entry.sample.state.stateFlags1 & busy) ||
-        local->csAction != PLAYER_CSACTION_NONE || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
-        gPlayState->transitionMode != TRANS_MODE_OFF) {
-        return;
-    }
     // Same shape Player_UpdateCommon gives the main Link: from the feet to just above the head (bodyPartsPos is
     // written by the puppet's previous draw).
     const f32 feetY =
@@ -173,11 +182,25 @@ void RegisterBodyCollision(Entry& entry) {
     p->cylinder.dim.radius = 12;
     p->cylinder.dim.height = static_cast<s16>(headY > feetY ? headY - feetY : 50.0f);
     p->cylinder.dim.yShift = static_cast<s16>(headY > feetY ? feetY - p->actor.world.pos.y : 0.0f);
+    Collider_UpdateCylinder(&p->actor, &p->cylinder);
+    if (IsHosting() && PlayerHits::MayHurt(playerId)) {
+        p->cylinder.base.acFlags = entry.cylinderAcFlags;
+        p->shieldQuad.base.acFlags = entry.shieldAcFlags;
+        CollisionCheck_SetAC(gPlayState, &gPlayState->colChkCtx, &p->cylinder.base);
+    } else {
+        p->cylinder.base.acFlags &= ~AC_ON;
+        p->shieldQuad.base.acFlags &= ~AC_ON;
+    }
+    const u32 busy = PLAYER_STATE1_20000000 | PLAYER_STATE1_TALKING | PLAYER_STATE1_DEAD;
+    if ((local->stateFlags1 & busy) || (entry.sample.state.stateFlags1 & busy) ||
+        local->csAction != PLAYER_CSACTION_NONE || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
+        gPlayState->transitionMode != TRANS_MODE_OFF) {
+        return;
+    }
     // Same mass as the local Link, so a push is shared: the puppet's half is undone by the next network pose and the
     // local Link only gets nudged, never pinned against a wall.
     p->actor.colChkInfo.mass = local->actor.colChkInfo.mass;
     p->actor.colChkInfo.displacement = { 0.0f, 0.0f, 0.0f };
-    Collider_UpdateCylinder(&p->actor, &p->cylinder);
     CollisionCheck_SetOC(gPlayState, &gPlayState->colChkCtx, &p->cylinder.base);
 }
 
@@ -194,7 +217,7 @@ void OnShouldUpdate(Actor* actor, bool* should) {
         return;
     }
     ApplyPose(entry->second);
-    RegisterBodyCollision(entry->second);
+    RegisterBodyCollision(entry->second, hooks->second.playerId);
 }
 
 // A few draw routines read the local save instead of the Player being drawn: the sword in hand and in the sheath
@@ -275,7 +298,38 @@ void Kill(uint32_t playerId, Entry& entry, const char* why) {
         SPDLOG_INFO("[Coop] Puppet for player {} removed ({})", playerId, why);
         Actor_Kill(&entry.actor->actor);
         entry.actor = nullptr;
+        entry.heartsActor = nullptr; // Its tags go with the actor
     }
+}
+
+// Hearts of the remote player over its name (gCoop.ShowHearts), from the health it reports on channel 3. Only the
+// font's ASCII: "3.75/5" is three and three quarter hearts out of five. Registered again only when it changes.
+void UpdateHearts(uint32_t playerId, Entry& entry) {
+    const bool show = CVarGetInteger(CVAR_COOP_SHOW_HEARTS, 1) != 0 && entry.actor != nullptr;
+    const int16_t health = show ? std::max<int16_t>(entry.sample.state.health, 0) : -1;
+    const int16_t capacity = show ? entry.sample.state.healthCapacity : -1;
+    if (entry.heartsActor == entry.actor && entry.heartsHealth == health && entry.heartsCapacity == capacity) {
+        return;
+    }
+    std::string& tag = sHeartsTags[playerId];
+    if (tag.empty()) {
+        tag = fmt::format("coop-hearts-{}", playerId);
+    }
+    NameTag_RemoveAllByTag(tag.c_str());
+    entry.heartsActor = entry.actor;
+    entry.heartsHealth = health;
+    entry.heartsCapacity = capacity;
+    if (!show) {
+        return;
+    }
+    static const char* const kQuarters[] = { "", ".25", ".5", ".75" };
+    const std::string text = fmt::format("{}{}/{}", health / 16, kQuarters[(health % 16) / 4], capacity / 16);
+    NameTagOptions options = {};
+    options.tag = tag.c_str();
+    options.yOffset = 24; // One line above the name
+    options.textColor = { 255, 80, 80, 255 };
+    options.noZBuffer = 0;
+    NameTag_RegisterForActorWithOptions(&entry.actor->actor, text.c_str(), options);
 }
 
 // Player_Init resets these shared values on every run; a puppet must leave them as the local player set them.
@@ -368,8 +422,10 @@ bool Spawn(uint32_t playerId, Entry& entry, const PlayerSync::State& s) {
                     ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED;
     actor->destroy = PuppetDestroy;
 
-    // Body only: the puppet neither deals nor takes damage yet (milestones 4 and 5). The draw code still registers
-    // the sword and shield quads, so they are switched off too.
+    // Body only: the puppet never deals damage, and takes hits only for its player (RegisterBodyCollision, host). The
+    // draw code still registers the sword and shield quads, so they are switched off too.
+    entry.cylinderAcFlags = p->cylinder.base.acFlags;
+    entry.shieldAcFlags = p->shieldQuad.base.acFlags;
     p->cylinder.base.atFlags &= ~AT_ON;
     p->cylinder.base.acFlags &= ~AC_ON;
     p->shieldCylinder.base.atFlags &= ~AT_ON;
@@ -449,16 +505,19 @@ void LogSamples() {
     sLastSecond = second;
     Player* local = GET_PLAYER(gPlayState);
     const uint32_t selfId = IsHosting() ? kHostPlayerId : GetSnapshot().localId;
-    SPDLOG_INFO("[Coop] Self sample: player {} form {} saveForm {} mask {} pos ({:.1f}, {:.1f}, {:.1f}) scene {}",
+    SPDLOG_INFO("[Coop] Self sample: player {} form {} saveForm {} mask {} pos ({:.1f}, {:.1f}, {:.1f}) scene {} "
+                "shield {}",
                 selfId, local->transformation, gSaveContext.save.playerForm, local->currentMask,
-                local->actor.world.pos.x, local->actor.world.pos.y, local->actor.world.pos.z, gPlayState->sceneId);
+                local->actor.world.pos.x, local->actor.world.pos.y, local->actor.world.pos.z, gPlayState->sceneId,
+                (local->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0);
     for (const auto& [id, entry] : sPuppets) {
         if (entry.actor != nullptr) {
             const Vec3f& pos = entry.actor->actor.world.pos;
             SPDLOG_INFO("[Coop] Puppet sample: of player {} form {} mask {} pos ({:.1f}, {:.1f}, {:.1f}) scene {} "
-                        "delay {}",
+                        "delay {} shield {}",
                         id, entry.actor->transformation, entry.actor->currentMask, pos.x, pos.y, pos.z,
-                        gPlayState->sceneId, entry.sample.delayMs);
+                        gPlayState->sceneId, entry.sample.delayMs,
+                        (entry.actor->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0);
         }
     }
 }
@@ -513,6 +572,7 @@ void Frame() {
         }
         entry.sample = sample;
         entry.haveSample = true;
+        UpdateHearts(s.playerId, entry);
     }
     for (auto& [id, entry] : sPuppets) {
         if (seen.count(id) == 0) {
@@ -525,6 +585,17 @@ void Frame() {
 Player* PuppetOf(uint32_t playerId) {
     auto it = sPuppets.find(playerId);
     return it != sPuppets.end() ? it->second.actor : nullptr;
+}
+
+uint32_t PlayerIdOf(const Actor* actor) {
+    auto hooks = sActorHooks.find(const_cast<Actor*>(actor));
+    if (hooks == sActorHooks.end()) {
+        return 0;
+    }
+    auto entry = sPuppets.find(hooks->second.playerId);
+    return entry != sPuppets.end() && reinterpret_cast<const Actor*>(entry->second.actor) == actor
+               ? hooks->second.playerId
+               : 0;
 }
 
 static RegisterShipInitFunc initFunc(RegisterPuppetHooks);
