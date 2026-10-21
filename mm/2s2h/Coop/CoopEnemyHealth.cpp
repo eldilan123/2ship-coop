@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <unordered_map>
 #include <spdlog/spdlog.h>
 #include <libultraship/bridge/consolevariablebridge.h>
@@ -21,6 +22,8 @@
 extern "C" {
 #include "z64.h"
 #include "variables.h"
+#include "overlays/actors/ovl_En_Ik/z_en_ik.h"
+#include "overlays/actors/ovl_En_Wiz/z_en_wiz.h"
 }
 
 namespace Coop::EnemyHealth {
@@ -29,21 +32,39 @@ namespace {
 
 // Types whose health is tied to fixed numbers in their code.
 const std::unordered_map<int16_t, const char*> kThresholds = {
-    { ACTOR_EN_IK, "set back to 9 when its armor breaks" },
-    { ACTOR_EN_WIZ, "second phase set back to 8 or 6" },
     { ACTOR_EN_DODONGO, "loses a fixed 4 per bomb eaten (health <= 4)" },
-    { ACTOR_EN_TALK_GIBUD, "revives with 8" },
-    { ACTOR_EN_FLOORMAS, "splits and merges back to its base health" },
     { ACTOR_EN_KNIGHT, "fixed health per phase" },
+    { ACTOR_EN_FLOORMAS, "splits into three with 1 each; the rule for rises would scale only one of them" },
     { ACTOR_EN_BB, "revives with its base health" },
     { ACTOR_EN_BBFALL, "revives with its base health" },
     { ACTOR_EN_SLIME, "revives with its base health" },
 };
 
+// Types whose second phase starts with a fixed health: when the field at `offset` leaves 0 (Iron Knuckle: its armor
+// broke; Wizrobe: first phase over) the new health is scaled once. Their health is not otherwise watched: a single
+// strong hit could take them from above that value to it, and that is not a revival.
+struct PhaseField {
+    ptrdiff_t offset;
+    size_t size;
+};
+const std::unordered_map<int16_t, PhaseField> kPhaseFields = {
+    { ACTOR_EN_IK, { offsetof(EnIk, drawArmorFlags), sizeof(u8) } },
+    { ACTOR_EN_WIZ, { offsetof(EnWiz, fightState), sizeof(s16) } },
+};
+
+int32_t ReadField(const Actor* actor, const PhaseField& f) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(actor) + f.offset;
+    return f.size == 1 ? *p : *reinterpret_cast<const s16*>(p);
+}
+
 struct Scaled {
     float mult;
     int16_t last;
+    const PhaseField* phase = nullptr;
+    int32_t lastPhase = 0;
 };
+// --coop-test-enemy-log: every change of an enemy's health on the host, with or without clients.
+std::unordered_map<Actor*, int16_t> sLoggedHealth;
 std::unordered_map<Actor*, Scaled> sScaled;
 
 float Multiplier(size_t players) {
@@ -83,17 +104,42 @@ void OnActorInit(Actor* actor) {
     }
     const int16_t scaled = Scale(base, mult);
     actor->colChkInfo.health = static_cast<u8>(scaled);
-    sScaled[actor] = { mult, scaled };
+    Scaled entry = { mult, scaled };
+    auto phase = kPhaseFields.find(actor->id);
+    if (phase != kPhaseFields.end()) {
+        entry.phase = &phase->second;
+        entry.lastPhase = ReadField(actor, phase->second);
+    }
+    sScaled[actor] = entry;
     SPDLOG_INFO("[Coop] enemy-health: {} params 0x{:04X} {} -> {} (x{:.2f}, {} players)", Enemies::TypeName(actor->id),
                 static_cast<uint16_t>(actor->params), base, scaled, mult, players);
 }
 
 void OnActorDestroy(Actor* actor) {
     sScaled.erase(actor);
+    sLoggedHealth.erase(actor);
 }
 
 void OnPlayDestroy() {
     sScaled.clear();
+    sLoggedHealth.clear();
+}
+
+void LogHealthChanges() {
+    if (!GetLaunchOptions().testEnemyLog || gPlayState == nullptr || gSaveContext.gameMode != GAMEMODE_NORMAL) {
+        return;
+    }
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
+        if (actor->update == nullptr || actor->init != nullptr) {
+            continue;
+        }
+        const int16_t health = actor->colChkInfo.health;
+        auto it = sLoggedHealth.find(actor);
+        if (it != sLoggedHealth.end() && it->second != health) {
+            SPDLOG_INFO("[Coop] enemy-health-change: {} {} -> {}", Enemies::TypeName(actor->id), it->second, health);
+        }
+        sLoggedHealth[actor] = health;
+    }
 }
 
 void RegisterEnemyHealthHooks() {
@@ -108,14 +154,27 @@ void RegisterEnemyHealthHooks() {
 void Frame() {
     if (!IsHosting()) {
         sScaled.clear();
+        sLoggedHealth.clear();
         return;
     }
-    // A scaled enemy whose health went up (it revived): the new value is scaled as well.
+    LogHealthChanges();
+    // A scaled enemy whose health went up (it revived), or whose second phase started: the new value is scaled too.
     for (auto& [actor, s] : sScaled) {
         if (actor->update == nullptr) {
             continue;
         }
         const int16_t health = actor->colChkInfo.health;
+        if (s.phase != nullptr) {
+            const int32_t phase = ReadField(actor, *s.phase);
+            if (s.lastPhase == 0 && phase != 0) {
+                const int16_t scaled = Scale(health, s.mult);
+                actor->colChkInfo.health = static_cast<u8>(scaled);
+                SPDLOG_INFO("[Coop] enemy-health: {} second phase starts with {} -> {} (x{:.2f})",
+                            Enemies::TypeName(actor->id), health, scaled, s.mult);
+            }
+            s.lastPhase = phase;
+            continue;
+        }
         if (health > s.last) {
             const int16_t scaled = Scale(health, s.mult);
             actor->colChkInfo.health = static_cast<u8>(scaled);
