@@ -358,6 +358,12 @@ void UpdateEnemyTests() {
             }
         }
     }
+    const std::optional<int>& limitFrom = options.testBombLimitFrom;
+    static int sLastLimitSecond = -1;
+    if (limitFrom.has_value() && seconds >= *limitFrom && seconds < *limitFrom + 60 && seconds != sLastLimitSecond) {
+        sLastLimitSecond = seconds;
+        Projectiles::TestBombLimit();
+    }
     const std::optional<int>& fuzzAt = options.testFuzzEnemiesAt;
     if (fuzzAt.has_value() && !sFuzzDone && seconds >= *fuzzAt && (IsHosting() || IsClientPlayingInSession())) {
         sFuzzDone = true;

@@ -52,10 +52,13 @@ void HostHitQueued(uint32_t owner, uint16_t id);
 void HostHitFinished(uint32_t owner, uint16_t id);
 
 // Test only (both): fires a projectile from the local Link at the nearest enemy, as the Link would (it is owned and
-// shared like one). `kind`: arrow, fire, ice, light, bubble, nut, bomb, chu, fins.
+// shared like one). `kind`: arrow, fire, ice, light, bubble, nut, bomb, chu, fins, bomblong (a bomb with its whole
+// fuse, dropped in front of the Link).
 void TestShoot(const char* kind);
 // Test only (both): sends malformed projectile messages to the other side.
 void TestFuzz();
+// Test only (both): asks the explosive limit what Player asks before taking out a bomb, and logs the answer.
+void TestBombLimit();
 
 } // namespace Coop::Projectiles
 

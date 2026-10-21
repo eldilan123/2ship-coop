@@ -946,6 +946,32 @@ void OnPlayDestroy() {
     sUpdating = nullptr;
 }
 
+// Player refuses to take out another bomb or bombchu while 3 explosives are in the scene (5 in some minigames).
+// Copies of the other players' explosives are actors of that category too; they do not count here, so each player
+// keeps their own limit. Only ever tightens the answer: whatever else turned the limit off stays off.
+uint32_t sLastLimitLogMs = 0;
+
+void OnLimitExplosives(bool* should) {
+    if (!*should || !SessionActive() || !Playing()) {
+        return;
+    }
+    PlayState* play = gPlayState;
+    const ActorListEntry& list = play->actorCtx.actorLists[ACTORCAT_EXPLOSIVES];
+    int copies = 0;
+    for (Actor* actor = list.first; actor != nullptr; actor = actor->next) {
+        copies += IsCopy(actor) ? 1 : 0;
+    }
+    const int own = list.length - copies;
+    const int limit = (play->unk_1887D != 0 || play->unk_1887E != 0) ? 5 : 3;
+    *should = own >= limit;
+    const uint32_t now = NowMs();
+    if (GetLaunchOptions().testEnemyLog && copies > 0 && now - sLastLimitLogMs >= 1000) {
+        sLastLimitLogMs = now;
+        SPDLOG_INFO("[Coop] explosive-limit: {} explosives here, {} of them copies: {}", list.length, copies,
+                    *should ? "blocked" : "allowed");
+    }
+}
+
 void StatsLine(uint32_t now) {
     if (sStatsMs == 0) {
         sStatsMs = now;
@@ -979,6 +1005,7 @@ void RegisterProjectileHooks() {
     gi->RegisterGameHook<GameInteractor::OnActorDestroy>(OnActorDestroy);
     gi->RegisterGameHook<GameInteractor::OnPlayDestroy>(OnPlayDestroy);
     RegisterBinaryHandler(Protocol::kChannelProjectiles, OnMessage);
+    REGISTER_VB_SHOULD(VB_LIMIT_EXPLOSIVES, { OnLimitExplosives(should); });
 }
 
 } // namespace
@@ -1120,6 +1147,15 @@ void TestShoot(const char* kindName) {
             Actor_SetScale(spawned, 0.01f);
             reinterpret_cast<EnBom*>(spawned)->timer = 25;
         }
+    } else if (kind == "bomblong") {
+        // A bomb with its own fuse, dropped in front of the Link (no target): for the explosive limit.
+        spawned =
+            Actor_Spawn(&play->actorCtx, play, ACTOR_EN_BOM, player->actor.world.pos.x + Math_SinS(facing) * 60.0f,
+                        player->actor.world.pos.y + 5.0f, player->actor.world.pos.z + Math_CosS(facing) * 60.0f,
+                        BOMB_EXPLOSIVE_TYPE_BOMB, facing, 0, BOMB_TYPE_BODY);
+        if (spawned != nullptr) {
+            Actor_SetScale(spawned, 0.01f);
+        }
     } else if (kind == "chu") {
         spawned = Actor_Spawn(&play->actorCtx, play, ACTOR_EN_BOM_CHU, player->actor.world.pos.x,
                               player->actor.world.pos.y, player->actor.world.pos.z, 0, facing, 0, 0);
@@ -1189,6 +1225,22 @@ void TestFuzz() {
     kill.id = 1;
     kill.reason = 9;
     send("kill with an unknown reason", Message(Type::Kill, self, &kill, sizeof(kill)));
+}
+
+void TestBombLimit() {
+    if (!Playing()) {
+        return;
+    }
+    PlayState* play = gPlayState;
+    const ActorListEntry& list = play->actorCtx.actorLists[ACTORCAT_EXPLOSIVES];
+    int copies = 0;
+    for (Actor* actor = list.first; actor != nullptr; actor = actor->next) {
+        copies += IsCopy(actor) ? 1 : 0;
+    }
+    // Player's own question (z_player.c, outside minigames).
+    const bool blocked = GameInteractor_Should(VB_LIMIT_EXPLOSIVES, list.length >= 3);
+    SPDLOG_INFO("[Coop] TEST: bomb limit: own {} copies {} -> {}", list.length - copies, copies,
+                blocked ? "blocked" : "allowed");
 }
 
 static RegisterShipInitFunc initFunc(RegisterProjectileHooks);

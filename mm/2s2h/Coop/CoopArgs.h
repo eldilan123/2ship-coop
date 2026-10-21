@@ -64,6 +64,9 @@ struct LaunchOptions {
     std::vector<TimedValue> testKill;
     // Both: seconds after reaching gameplay to send malformed enemy channel messages to the other side
     std::optional<int> testFuzzEnemiesAt;
+    // Both: from this second on, once a second for a minute, log whether the local Link could take out a bomb (the
+    // explosive limit, as Player checks it)
+    std::optional<int> testBombLimitFrom;
     // Host: from testSweepAt on, every kSweepStepSeconds remove the previous test enemy and spawn the next one
     struct SweepEntry {
         int actorId;

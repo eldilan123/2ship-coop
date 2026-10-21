@@ -230,7 +230,8 @@ bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out, bool shoot =
     }
     const std::string& button = parts[0];
     static const char* const kButtons[] = { "b", "a", "z", "r", "roll" };
-    static const char* const kShots[] = { "arrow", "fire", "ice", "light", "bubble", "nut", "bomb", "chu", "fins" };
+    static const char* const kShots[] = { "arrow", "fire", "ice", "light", "bubble",
+                                          "nut",   "bomb", "chu", "fins",  "bomblong" };
     const bool known = shoot ? std::find(std::begin(kShots), std::end(kShots), button) != std::end(kShots)
                              : std::find(std::begin(kButtons), std::end(kButtons), button) != std::end(kButtons);
     if (!known) {
@@ -423,13 +424,15 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));
             }
         } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
-                   arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies") {
+                   arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies" ||
+                   arg == "--coop-test-bomb-limit") {
             const char* value = takeValue();
             int seconds = 0;
             if (value != nullptr && ParseSeconds(value, seconds)) {
                 (arg == "--coop-test-reset-cycle"   ? options.testResetCycleAt
                  : arg == "--coop-test-force-save"  ? options.testForceSaveAt
                  : arg == "--coop-test-block-songs" ? options.testBlockSongsAt
+                 : arg == "--coop-test-bomb-limit"  ? options.testBombLimitFrom
                                                     : options.testFuzzEnemiesAt) = seconds;
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not @<seconds>", arg, value));
