@@ -11,6 +11,7 @@
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
+#include "CoopProjectiles.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -60,6 +61,7 @@ struct AttackState {
     SteadyClock::time_point next = {};
 };
 std::vector<AttackState> sAttacks;
+std::vector<AttackState> sShots;
 uint16_t sHeldButtons = 0;
 bool sHeldStick = false;
 s16 sStickYaw = 0; // World direction the stick pushes towards while held
@@ -361,6 +363,7 @@ void UpdateEnemyTests() {
         sFuzzDone = true;
         Enemies::TestFuzz();
         Combat::TestFuzz();
+        Projectiles::TestFuzz();
     }
 }
 
@@ -420,6 +423,28 @@ void UpdateAttacks() {
     }
 }
 
+// --coop-test-shoot: a projectile from the local Link at the nearest enemy, `count` times.
+void UpdateShots() {
+    const auto& shots = GetLaunchOptions().testShoot;
+    sShots.resize(shots.size());
+    const auto now = SteadyClock::now();
+    const int seconds = GameplaySeconds();
+    for (size_t i = 0; i < shots.size(); i++) {
+        const LaunchOptions::TimedAttack& s = shots[i];
+        AttackState& state = sShots[i];
+        if (seconds < s.atSeconds || state.done >= s.count || now < state.next) {
+            continue;
+        }
+        if (s.approach > 0) {
+            ApproachNearestEnemy(s.approach);
+        }
+        state.done++;
+        state.next = now + std::chrono::milliseconds(s.intervalMs);
+        Projectiles::TestShoot(s.button.c_str());
+        return; // One per frame
+    }
+}
+
 // Applied to the local Link's input only (Player passes its own input through this hook).
 void OnPassPlayerInputs(Input* input) {
     if (sHeldButtons == 0) {
@@ -473,6 +498,7 @@ void Frame() {
     UpdateLocalChanges();
     UpdateEnemyTests();
     UpdateAttacks();
+    UpdateShots();
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;
