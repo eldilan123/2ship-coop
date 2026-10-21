@@ -34,6 +34,7 @@ namespace {
 const std::unordered_map<int16_t, const char*> kThresholds = {
     { ACTOR_EN_DODONGO, "loses a fixed 4 per bomb eaten (health <= 4)" },
     { ACTOR_EN_KNIGHT, "fixed health per phase" },
+    { ACTOR_EN_FZ, "its health picks its body model (3 - health)" },
     { ACTOR_EN_FLOORMAS, "splits into three with 1 each; the rule for rises would scale only one of them" },
     { ACTOR_EN_BB, "revives with its base health" },
     { ACTOR_EN_BBFALL, "revives with its base health" },
