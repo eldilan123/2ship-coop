@@ -11,10 +11,12 @@
 #include "CoopClock.h"
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
+#include "CoopEnemyHealth.h"
 #include "CoopPlayerSync.h"
 #include "CoopProjectiles.h"
 #include "CoopPuppet.h"
 #include "CoopSession.h"
+#include "CoopTargeting.h"
 #include "CoopTest.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -133,6 +135,8 @@ void CheckQuitAfter() {
 }
 
 void OnFrame() {
+    // First: no enemy update may still be seeing a puppet as the player when the frame starts.
+    Targeting::Frame();
     ProcessInbox();
     SessionFrame();
     Clock::Frame();
@@ -143,6 +147,7 @@ void OnFrame() {
     // After the hits: a projectile's hits found this frame go out before its Kill.
     Projectiles::Frame();
     Enemies::Frame();
+    EnemyHealth::Frame();
     Test::Frame();
     LogNetStats();
     CheckQuitAfter();
