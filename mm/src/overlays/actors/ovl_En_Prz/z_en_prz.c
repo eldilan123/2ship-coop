@@ -367,8 +367,8 @@ void func_80A767A8(EnPrz* this, PlayState* play) {
         this->unk_1C8 = 1;
     }
 
-    this->unk_1D8.y =
-        (player->actor.world.pos.y + D_80A771E0[GET_PLAYER_FORM]) + Rand_CenteredFloat((2.0f * this->unk_1E6) + 1.0f);
+    this->unk_1D8.y = (player->actor.world.pos.y + D_80A771E0[PLAYER_FORM_OF(GET_PLAYER(play))]) +
+                      Rand_CenteredFloat((2.0f * this->unk_1E6) + 1.0f);
     func_80A76070(this, Math_Vec3f_Yaw(&this->actor.world.pos, &this->unk_1D8), play);
 }
 
