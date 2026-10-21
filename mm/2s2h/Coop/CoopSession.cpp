@@ -368,6 +368,21 @@ void ClientInterceptExit() {
                 Entrance_GetSceneIdAbsolute(entrance));
 }
 
+} // namespace
+
+void ClientReturnToHost(const char* why) {
+    SPDLOG_INFO("[Coop] Going back next to the host ({})", why);
+    sPending = { true,
+                 sLastHost.entrance,
+                 sLastHost.sceneLayer,
+                 sLastHost.sceneId,
+                 sLastHost.seq,
+                 true,
+                 std::chrono::steady_clock::now() };
+}
+
+namespace {
+
 // Host side of part 2: take the exit a client asked for, if the host can change scenes right now.
 void HostOnSceneRequest(uint32_t from, const nlohmann::json& message) {
     const int64_t entrance = Protocol::GetInt(message, "entrance", -1);
