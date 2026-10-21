@@ -58,6 +58,7 @@ bool sSpawning = false;
 std::unordered_set<std::string> sAnimNames;
 
 constexpr const char* kNameTagTag = "coop-puppet";
+constexpr uint32_t kStaleMs = 2000;
 
 bool InGameplay() {
     return gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -493,6 +494,12 @@ void Frame() {
             s.inGameplay && s.sceneId == gPlayState->sceneId && s.sceneLayer == (int8_t)gSaveContext.sceneLayer;
         if (!here) {
             Kill(s.playerId, entry, "player is in another scene");
+            entry.haveSample = false;
+            continue;
+        }
+        // A player that stopped sending (title screen, file select, a long load) is not left frozen in place.
+        if (sample.ageMs > kStaleMs) {
+            Kill(s.playerId, entry, "player stopped sending");
             entry.haveSample = false;
             continue;
         }
