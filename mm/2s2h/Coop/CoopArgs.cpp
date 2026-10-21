@@ -423,6 +423,16 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.warnings.push_back(
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));
             }
+        } else if (arg == "--coop-test-near") {
+            const char* value = takeValue();
+            LaunchOptions::TimedValue timed;
+            if (value != nullptr && ParseTimed(value, false, timed) && timed.value != 0 &&
+                std::abs(timed.value) <= 5000) {
+                options.testNear.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-near: '{}' is not <distance (negative: the far side)>@<seconds>", value));
+            }
         } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
                    arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies" ||
                    arg == "--coop-test-bomb-limit") {

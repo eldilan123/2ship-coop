@@ -62,6 +62,7 @@ struct AttackState {
 };
 std::vector<AttackState> sAttacks;
 std::vector<AttackState> sShots;
+size_t sNextNear = 0;
 uint16_t sHeldButtons = 0;
 bool sHeldStick = false;
 s16 sStickYaw = 0; // World direction the stick pushes towards while held
@@ -391,7 +392,8 @@ void ApproachNearestEnemy(int distance) {
     if (poly != nullptr) {
         pos.y = floor;
     }
-    const s16 facing = static_cast<s16>(yawFromEnemy + 0x8000);
+    // With a negative distance the Link ends up on the enemy's other side, still facing it.
+    const s16 facing = static_cast<s16>(distance < 0 ? yawFromEnemy : yawFromEnemy + 0x8000);
     player->actor.world.pos = pos;
     player->actor.prevPos = pos;
     player->actor.shape.rot.y = player->actor.world.rot.y = player->yaw = facing;
@@ -505,6 +507,12 @@ void Frame() {
     UpdateEnemyTests();
     UpdateAttacks();
     UpdateShots();
+    // --coop-test-near: the local Link at a distance from the nearest enemy (enemy targeting tests).
+    const auto& nearSteps = GetLaunchOptions().testNear;
+    if (sNextNear < nearSteps.size() && GameplaySeconds() >= nearSteps[sNextNear].atSeconds &&
+        NoTransitionInProgress()) {
+        ApproachNearestEnemy(nearSteps[sNextNear++].value);
+    }
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;
