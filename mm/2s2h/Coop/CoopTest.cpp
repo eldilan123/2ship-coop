@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <string>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
@@ -11,6 +14,7 @@
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
+#include "CoopPlayerHits.h"
 #include "CoopProjectiles.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -62,6 +66,7 @@ struct AttackState {
 };
 std::vector<AttackState> sAttacks;
 std::vector<AttackState> sShots;
+std::vector<AttackState> sHits;
 size_t sNextNear = 0;
 uint16_t sHeldButtons = 0;
 bool sHeldStick = false;
@@ -371,6 +376,7 @@ void UpdateEnemyTests() {
         Enemies::TestFuzz();
         Combat::TestFuzz();
         Projectiles::TestFuzz();
+        PlayerHits::TestFuzz();
     }
 }
 
@@ -480,6 +486,58 @@ void OnPassPlayerInputs(Input* input) {
     }
 }
 
+// --coop-test-hurt / --coop-test-health / --coop-test-give-fairy / --coop-test-log-health (player damage tests).
+size_t sNextHurt = 0;
+size_t sNextHealth = 0;
+bool sFairyGiven = false;
+int16_t sLoggedHealth = -1;
+std::string sLoggedBottles;
+
+void UpdateHealthTests() {
+    const LaunchOptions& options = GetLaunchOptions();
+    PlayState* play = gPlayState;
+    s16& health = gSaveContext.save.saveInfo.playerData.health;
+    // Logged before --coop-test-keep-health fills it again.
+    if (options.testLogHealth || options.testKeepHealth) {
+        if (sLoggedHealth >= 0 && health != sLoggedHealth) {
+            SPDLOG_INFO("[Coop] TEST: health {} -> {}", sLoggedHealth, health);
+        }
+        sLoggedHealth = health;
+    }
+    if (options.testLogHealth) {
+        std::string bottles;
+        for (int slot = SLOT_BOTTLE_1; slot <= SLOT_BOTTLE_6; slot++) {
+            bottles += fmt::format("{}0x{:02X}", slot == SLOT_BOTTLE_1 ? "" : " ",
+                                   gSaveContext.save.saveInfo.inventory.items[slot]);
+        }
+        if (bottles != sLoggedBottles) {
+            SPDLOG_INFO("[Coop] TEST: bottles {} (fairy is 0x{:02X}, empty bottle 0x{:02X})", bottles,
+                        static_cast<int>(ITEM_FAIRY), static_cast<int>(ITEM_BOTTLE));
+            sLoggedBottles = bottles;
+        }
+    }
+    if (!NoTransitionInProgress() || GET_PLAYER(play) == nullptr) {
+        return;
+    }
+    const int seconds = GameplaySeconds();
+    if (sNextHurt < options.testHurt.size() && seconds >= options.testHurt[sNextHurt].atSeconds) {
+        const int damage = options.testHurt[sNextHurt++].value;
+        SPDLOG_INFO("[Coop] TEST: damagePlayer {} on the local Link (health {})", -damage, health);
+        play->damagePlayer(play, -damage);
+    }
+    if (sNextHealth < options.testHealth.size() && seconds >= options.testHealth[sNextHealth].atSeconds) {
+        const int value = options.testHealth[sNextHealth++].value;
+        SPDLOG_INFO("[Coop] TEST: health set {} -> {}", health, value);
+        health = static_cast<s16>(std::min<int>(value, gSaveContext.save.saveInfo.playerData.healthCapacity));
+        sLoggedHealth = health;
+    }
+    if (options.testGiveFairyAt.has_value() && !sFairyGiven && seconds >= *options.testGiveFairyAt) {
+        sFairyGiven = true;
+        gSaveContext.save.saveInfo.inventory.items[SLOT_BOTTLE_1] = ITEM_FAIRY;
+        SPDLOG_INFO("[Coop] TEST: a fairy in the first bottle slot (in memory)");
+    }
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPassPlayerInputs>(OnPassPlayerInputs);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
@@ -507,12 +565,26 @@ void Frame() {
     UpdateEnemyTests();
     UpdateAttacks();
     UpdateShots();
+    // --coop-test-hit: the nearest enemy hit with given damage flags (enemy health phase tests).
+    const auto& hits = GetLaunchOptions().testHit;
+    sHits.resize(hits.size());
+    for (size_t i = 0; i < hits.size(); i++) {
+        AttackState& state = sHits[i];
+        if (GameplaySeconds() < hits[i].atSeconds || state.done >= hits[i].count || SteadyClock::now() < state.next) {
+            continue;
+        }
+        state.done++;
+        state.next = SteadyClock::now() + std::chrono::milliseconds(hits[i].intervalMs);
+        Combat::TestHitNearest(static_cast<uint32_t>(std::strtoul(hits[i].button.c_str(), nullptr, 16)));
+        break;
+    }
     // --coop-test-near: the local Link at a distance from the nearest enemy (enemy targeting tests).
     const auto& nearSteps = GetLaunchOptions().testNear;
     if (sNextNear < nearSteps.size() && GameplaySeconds() >= nearSteps[sNextNear].atSeconds &&
         NoTransitionInProgress()) {
         ApproachNearestEnemy(nearSteps[sNextNear++].value);
     }
+    UpdateHealthTests();
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;

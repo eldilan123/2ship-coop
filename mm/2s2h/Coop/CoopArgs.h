@@ -93,6 +93,17 @@ struct LaunchOptions {
     // Both: put the local Link this far from the nearest enemy, facing it (value = distance; negative: on the enemy's
     // other side, away from where the Link was)
     std::vector<TimedValue> testNear;
+    // Host: hit the nearest enemy with these damage flags (`button`, hex), `count` times every `intervalMs` (enemy
+    // health phase tests)
+    std::vector<TimedAttack> testHit;
+    // Both: the local Link takes this much damage through play->damagePlayer (value = health units, 16 per heart)
+    std::vector<TimedValue> testHurt;
+    // Both: the local Link's health set to this value (0 kills it the way any cause does once health reaches 0)
+    std::vector<TimedValue> testHealth;
+    // Both: a fairy put in the first bottle slot (in memory), at this second
+    std::optional<int> testGiveFairyAt;
+    // Both: log every change of the local health and of the bottle slots
+    bool testLogHealth = false;
     // Both: first id of this game's projectile counter (tests the wrap past 65535)
     int testProjectileFirstId = 0;
     // Parse problems, logged once the logger exists

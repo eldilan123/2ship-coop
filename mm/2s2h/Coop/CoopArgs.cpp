@@ -214,7 +214,7 @@ bool ParseSweep(const char* text, std::vector<LaunchOptions::SweepEntry>& out, i
 
 // "<button>[:<count>[:<intervalMs>[:<holdMs>[:<approach>]]]]@<seconds>"; for --coop-test-shoot the button is the
 // projectile kind.
-bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out, bool shoot = false) {
+bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out, bool shoot = false, bool flags = false) {
     const char* at = text != nullptr ? std::strrchr(text, '@') : nullptr;
     long seconds = 0;
     if (at == nullptr || !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
@@ -232,8 +232,10 @@ bool ParseAttack(const char* text, LaunchOptions::TimedAttack& out, bool shoot =
     static const char* const kButtons[] = { "b", "a", "z", "r", "roll" };
     static const char* const kShots[] = { "arrow", "fire", "ice", "light", "bubble",
                                           "nut",   "bomb", "chu", "fins",  "bomblong" };
-    const bool known = shoot ? std::find(std::begin(kShots), std::end(kShots), button) != std::end(kShots)
-                             : std::find(std::begin(kButtons), std::end(kButtons), button) != std::end(kButtons);
+    const bool known =
+        flags   ? (button.rfind("0x", 0) == 0 && button.size() <= 10 && std::strtoul(button.c_str(), nullptr, 16) != 0)
+        : shoot ? std::find(std::begin(kShots), std::end(kShots), button) != std::end(kShots)
+                : std::find(std::begin(kButtons), std::end(kButtons), button) != std::end(kButtons);
     if (!known) {
         return false;
     }
@@ -320,6 +322,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testEnemyLog = true;
         } else if (arg == "--coop-test-keep-health") {
             options.testKeepHealth = true;
+        } else if (arg == "--coop-test-log-health") {
+            options.testLogHealth = true;
         } else if (arg == "--coop-test-spawn") {
             const char* value = takeValue();
             LaunchOptions::TimedSpawn timed;
@@ -423,6 +427,23 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.warnings.push_back(
                     fmt::format("{}: '{}' is not <{}>@<seconds>", arg, value, isGoto ? "hex entrance" : "minutes"));
             }
+        } else if (arg == "--coop-test-hit") {
+            const char* value = takeValue();
+            LaunchOptions::TimedAttack timed;
+            if (value != nullptr && ParseAttack(value, timed, false, true)) {
+                options.testHit.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-hit: '{}' is not 0x<damage flags>[:count[:intervalMs]]@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-hurt" || arg == "--coop-test-health") {
+            const char* value = takeValue();
+            LaunchOptions::TimedValue timed;
+            if (value != nullptr && ParseTimed(value, false, timed) && timed.value >= 0 && timed.value <= 20 * 16) {
+                (arg == "--coop-test-hurt" ? options.testHurt : options.testHealth).push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("{}: '{}' is not <health units (0-320)>@<seconds>", arg, value));
+            }
         } else if (arg == "--coop-test-near") {
             const char* value = takeValue();
             LaunchOptions::TimedValue timed;
@@ -435,7 +456,7 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             }
         } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
                    arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies" ||
-                   arg == "--coop-test-bomb-limit") {
+                   arg == "--coop-test-bomb-limit" || arg == "--coop-test-give-fairy") {
             const char* value = takeValue();
             int seconds = 0;
             if (value != nullptr && ParseSeconds(value, seconds)) {
@@ -443,6 +464,7 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                  : arg == "--coop-test-force-save"  ? options.testForceSaveAt
                  : arg == "--coop-test-block-songs" ? options.testBlockSongsAt
                  : arg == "--coop-test-bomb-limit"  ? options.testBombLimitFrom
+                 : arg == "--coop-test-give-fairy"  ? options.testGiveFairyAt
                                                     : options.testFuzzEnemiesAt) = seconds;
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not @<seconds>", arg, value));
