@@ -1072,12 +1072,13 @@ std::vector<uint8_t> HitsMessage(uint8_t type, const void* body, size_t size) {
 void TestHitNearest(uint32_t dmgFlags) {
     PlayState* play = gPlayState;
     Player* player = GET_PLAYER(play);
-    // The nearest enemy actor, tracked or not (with no client the host tracks nothing).
+    // The nearest enemy actor that can still lose health, tracked or not (with no client the host tracks nothing; the
+    // town dog is an enemy with no health).
     Actor* target = nullptr;
     float best = 1e9f;
     for (Actor* a = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; a != nullptr && player != nullptr; a = a->next) {
         const float d = Actor_WorldDistXYZToActor(&player->actor, a);
-        if (a->update != nullptr && a->init == nullptr && a->draw != nullptr && d < best) {
+        if (a->update != nullptr && a->init == nullptr && a->draw != nullptr && a->colChkInfo.health > 0 && d < best) {
             best = d;
             target = a;
         }
