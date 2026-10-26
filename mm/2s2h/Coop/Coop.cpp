@@ -17,6 +17,7 @@
 #include "CoopPlayerSync.h"
 #include "CoopProjectiles.h"
 #include "CoopPuppet.h"
+#include "CoopRooms.h"
 #include "CoopSession.h"
 #include "CoopTargeting.h"
 #include "CoopTest.h"
@@ -143,6 +144,8 @@ void OnFrame() {
     SessionFrame();
     Clock::Frame();
     PlayerSync::Frame();
+    // Before the puppets: a puppet whose room is not loaded here is not shown.
+    Rooms::Frame();
     Puppet::Frame();
     // Before the enemy puppets register their colliders again: hits on them are read from last frame's check.
     Combat::Frame();
