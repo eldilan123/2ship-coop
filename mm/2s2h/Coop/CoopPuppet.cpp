@@ -13,6 +13,7 @@
 #include "CoopArgs.h"
 #include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
+#include "CoopRooms.h"
 #include "CoopSession.h"
 #include "2s2h/BenPort.h"
 #include "2s2h/NameTag/NameTag.h"
@@ -417,6 +418,8 @@ bool Spawn(uint32_t playerId, Entry& entry, const PlayerSync::State& s) {
     // local player's form slot (swapped when it transforms) is never shared.
     actor->objectSlot = play->objectCtx.mainKeepSlot;
     Actor_ChangeCategory(play, &play->actorCtx, actor, ACTORCAT_NPC);
+    // In no room: the local game's room changes (doors, room moves) never delete it; CoopPuppet decides.
+    actor->room = -1;
     actor->flags &= ~(ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_FRIENDLY);
     actor->flags |= ACTOR_FLAG_FREEZE_EXCEPTION | ACTOR_FLAG_UPDATE_DURING_OCARINA |
                     ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED;
@@ -506,18 +509,18 @@ void LogSamples() {
     Player* local = GET_PLAYER(gPlayState);
     const uint32_t selfId = IsHosting() ? kHostPlayerId : GetSnapshot().localId;
     SPDLOG_INFO("[Coop] Self sample: player {} form {} saveForm {} mask {} pos ({:.1f}, {:.1f}, {:.1f}) scene {} "
-                "shield {}",
+                "shield {} room {}",
                 selfId, local->transformation, gSaveContext.save.playerForm, local->currentMask,
                 local->actor.world.pos.x, local->actor.world.pos.y, local->actor.world.pos.z, gPlayState->sceneId,
-                (local->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0);
+                (local->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0, gPlayState->roomCtx.curRoom.num);
     for (const auto& [id, entry] : sPuppets) {
         if (entry.actor != nullptr) {
             const Vec3f& pos = entry.actor->actor.world.pos;
             SPDLOG_INFO("[Coop] Puppet sample: of player {} form {} mask {} pos ({:.1f}, {:.1f}, {:.1f}) scene {} "
-                        "delay {} shield {}",
+                        "delay {} shield {} room {}",
                         id, entry.actor->transformation, entry.actor->currentMask, pos.x, pos.y, pos.z,
                         gPlayState->sceneId, entry.sample.delayMs,
-                        (entry.actor->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0);
+                        (entry.actor->stateFlags1 & PLAYER_STATE1_400000) ? 1 : 0, entry.sample.state.roomNum);
         }
     }
 }
@@ -553,6 +556,12 @@ void Frame() {
             s.inGameplay && s.sceneId == gPlayState->sceneId && s.sceneLayer == (int8_t)gSaveContext.sceneLayer;
         if (!here) {
             Kill(s.playerId, entry, "player is in another scene");
+            entry.haveSample = false;
+            continue;
+        }
+        // Milestone 5b: a player in a room that is not loaded here would stand in the void.
+        if (!Rooms::RoomLoadedHere(s.roomNum)) {
+            Kill(s.playerId, entry, "player is in a room not loaded here");
             entry.haveSample = false;
             continue;
         }
