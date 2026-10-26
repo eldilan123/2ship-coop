@@ -1838,6 +1838,33 @@ void ForEachRegisteredPuppetCollider(const std::function<void(uint16_t netId, Ac
     }
 }
 
+size_t HostEnemiesInRoom(int8_t room) {
+    size_t n = 0;
+    for (const auto& [netId, enemy] : sHost) {
+        if (enemy.actor != nullptr && enemy.actor->update != nullptr &&
+            (enemy.actor->room == room || enemy.actor->room == -1)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+void ClientPuppetCounts(size_t& shown, size_t& duplicateNetIds) {
+    shown = 0;
+    duplicateNetIds = 0;
+    std::unordered_map<uint16_t, int> perNetId;
+    for (const auto& [actor, p] : sPuppets) {
+        if (p.netId != 0) {
+            if (p.visible && actor->update != nullptr) {
+                shown++;
+            }
+            if (++perNetId[p.netId] == 2) {
+                duplicateNetIds++;
+            }
+        }
+    }
+}
+
 Actor* PuppetActor(uint16_t netId) {
     auto it = sKnown.find(netId);
     if (it == sKnown.end() || it->second.actor == nullptr) {

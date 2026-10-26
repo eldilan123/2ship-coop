@@ -1,6 +1,7 @@
 #ifndef COOP_ENEMIES_H
 #define COOP_ENEMIES_H
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 
@@ -25,6 +26,10 @@ uint16_t HostNetIdOf(const Actor* actor);
 void ForEachRegisteredPuppetCollider(const std::function<void(uint16_t netId, Actor* actor, Collider* col)>& fn);
 // Client: the shown puppet with this netId, or null.
 Actor* PuppetActor(uint16_t netId);
+// Host: tracked enemies alive in this room (or in no room). Client: puppets shown, and netIds with more than one
+// puppet actor (must be 0). Room move checks (CoopRooms).
+size_t HostEnemiesInRoom(int8_t room);
+void ClientPuppetCounts(size_t& shown, size_t& duplicateNetIds);
 // Client: the netId of an enemy puppet, or 0.
 uint16_t PuppetNetIdOf(const Actor* actor);
 // The nearest live enemy (host) or shown puppet (client) to `from`, or null. `testFirst` (tests): enemies spawned at
