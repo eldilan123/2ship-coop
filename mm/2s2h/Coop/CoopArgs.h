@@ -104,6 +104,11 @@ struct LaunchOptions {
     std::optional<int> testGiveFairyAt;
     // Both: log every change of the local health and of the bottle slots
     bool testLogHealth = false;
+    // Both: log the scene's room count and transition actors (doors, room planes) on every room load
+    bool testLogTransitions = false;
+    // Both: cross the scene's transition actor number `value` (place the Link in front of it, then walk through or
+    // press A for a door; game input only)
+    std::vector<TimedValue> testCross;
     // Both: first id of this game's projectile counter (tests the wrap past 65535)
     int testProjectileFirstId = 0;
     // Parse problems, logged once the logger exists

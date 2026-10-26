@@ -16,6 +16,7 @@
 #include "CoopEnemyTypes.h"
 #include "CoopPlayerHits.h"
 #include "CoopProjectiles.h"
+#include "CoopRooms.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -73,6 +74,23 @@ bool sHeldStick = false;
 s16 sStickYaw = 0; // World direction the stick pushes towards while held
 bool sPressEdge = false;
 SteadyClock::time_point sHeldUntil = {};
+// --coop-test-cross: walking through a transition (stick held towards sStickYaw until then), presses of A left for a
+// door, and the result line
+SteadyClock::time_point sWalkUntil = {};
+struct Cross {
+    bool active = false;
+    int index = -1;
+    int8_t fromRoom = -1;
+    int pressesLeft = 0;
+    SteadyClock::time_point nextPress = {};
+    SteadyClock::time_point reportAt = {};
+    Vec3f placed = {};
+    s16 facing = 0;
+    int replaced = 0;
+} sCross;
+size_t sNextCross = 0;
+int sCrossRetries = 0;
+SteadyClock::time_point sRetryAt = {};
 constexpr int kSweepStepSeconds = 5;
 
 bool InGameplay() {
@@ -377,6 +395,7 @@ void UpdateEnemyTests() {
         Combat::TestFuzz();
         Projectiles::TestFuzz();
         PlayerHits::TestFuzz();
+        Rooms::TestFuzz();
     }
 }
 
@@ -461,6 +480,12 @@ void UpdateShots() {
 
 // Applied to the local Link's input only (Player passes its own input through this hook).
 void OnPassPlayerInputs(Input* input) {
+    if (sHeldButtons == 0 && SteadyClock::now() < sWalkUntil && gPlayState != nullptr) {
+        const s16 angle = static_cast<s16>(sStickYaw - Camera_GetInputDirYaw(GET_ACTIVE_CAM(gPlayState)));
+        input->cur.stick_x = input->rel.stick_x = static_cast<s8>(-Math_SinS(angle) * 60.0f);
+        input->cur.stick_y = input->rel.stick_y = static_cast<s8>(Math_CosS(angle) * 60.0f);
+        return;
+    }
     if (sHeldButtons == 0) {
         return;
     }
@@ -483,6 +508,109 @@ void OnPassPlayerInputs(Input* input) {
         const s8 y = static_cast<s8>(Math_CosS(angle) * 80.0f);
         input->cur.stick_x = input->rel.stick_x = x;
         input->cur.stick_y = input->rel.stick_y = y;
+    }
+}
+
+// --coop-test-cross: the Link in front of a transition actor (door or room plane), facing it, on the side of its
+// current room; then A for a door or the stick held for a room plane.
+void StartCross(int index) {
+    PlayState* play = gPlayState;
+    Player* player = GET_PLAYER(play);
+    if (index >= play->transitionActors.count) {
+        SPDLOG_INFO("[Coop] TEST: cross {}: the scene has {} transitions", index, play->transitionActors.count);
+        return;
+    }
+    const TransitionActorEntry& t = play->transitionActors.list[index];
+    const int16_t id = static_cast<int16_t>(t.id < 0 ? -t.id : t.id) & 0x1FFF;
+    const bool door =
+        id == ACTOR_EN_DOOR || id == ACTOR_DOOR_SHUTTER || id == ACTOR_DOOR_SPIRAL || id == ACTOR_BG_OPEN_SHUTTER;
+    const s16 yaw = DEG_TO_BINANG((t.rotY >> 7) & 0x1FF);
+    const int8_t cur = play->roomCtx.curRoom.num;
+    // sides[1] is the room the transition faces (in Woodfall, room 2 lies along the facing of door 2, rooms 1/2).
+    const bool inFront = t.sides[1].room == cur;
+    const float distance = door ? 30.0f : 80.0f; // Door_Shutter notices the player under 50 along its normal
+    const float sign = inFront ? 1.0f : -1.0f;
+    const Vec3f pos = { t.pos.x + Math_SinS(yaw) * distance * sign, t.pos.y + 20.0f,
+                        t.pos.z + Math_CosS(yaw) * distance * sign };
+    const s16 facing = static_cast<s16>(inFront ? yaw + 0x8000 : yaw);
+    // The floor right there (a door can sit on a ledge above a pit on one side).
+    Vec3f probe = { pos.x, pos.y + 50.0f, pos.z };
+    CollisionPoly* poly = nullptr;
+    s32 bgId = 0;
+    const f32 floorY = BgCheck_EntityRaycastFloor3(&play->colCtx, &poly, &bgId, &probe);
+    // Off any moving floor first (a door's own collision is one): the game would carry the Link back on it.
+    player->actor.floorBgId = BGCHECK_SCENE;
+    player->actor.world.pos = pos;
+    player->actor.prevPos = pos;
+    player->actor.shape.rot.y = player->actor.world.rot.y = player->yaw = facing;
+    player->speedXZ = 0.0f;
+    sStickYaw = facing;
+    const auto now = SteadyClock::now();
+    sCross = { true, index,  cur, door ? 3 : 0, now + std::chrono::milliseconds(400), now + std::chrono::seconds(6),
+               pos,  facing, 0 };
+    if (!door) {
+        sWalkUntil = now + std::chrono::milliseconds(2500);
+    }
+    SPDLOG_INFO("[Coop] TEST: crossing transition {} ({}, rooms {}/{}) from room {} at ({:.0f}, {:.0f}, {:.0f}); floor "
+                "{:.0f}",
+                index, Enemies::TypeName(id), t.sides[0].room, t.sides[1].room, cur, pos.x, pos.y, pos.z, floorY);
+}
+
+void UpdateCross() {
+    const auto& steps = GetLaunchOptions().testCross;
+    const auto now = SteadyClock::now();
+    if (sCross.active) {
+        // The game sometimes puts the Link back where it stood on the next frame; place it again (before any press).
+        Player* link = GET_PLAYER(gPlayState);
+        const float dx = link->actor.world.pos.x - sCross.placed.x, dz = link->actor.world.pos.z - sCross.placed.z;
+        if (sCross.pressesLeft == 3 && sCross.replaced < 3 && dx * dx + dz * dz > 20.0f * 20.0f) {
+            sCross.replaced++;
+            link->actor.floorBgId = BGCHECK_SCENE;
+            link->actor.world.pos = sCross.placed;
+            link->actor.prevPos = sCross.placed;
+            link->actor.shape.rot.y = link->actor.world.rot.y = link->yaw = sCross.facing;
+            link->speedXZ = 0.0f;
+            sCross.nextPress = now + std::chrono::milliseconds(400);
+            SPDLOG_INFO("[Coop] TEST: cross {}: Link placed again ({})", sCross.index, sCross.replaced);
+        }
+        if (sCross.pressesLeft > 0 && now >= sCross.nextPress && sHeldButtons == 0) {
+            sHeldButtons = BTN_A;
+            sHeldStick = false;
+            sPressEdge = true;
+            sHeldUntil = now + std::chrono::milliseconds(100);
+            sCross.pressesLeft--;
+            sCross.nextPress = now + std::chrono::milliseconds(700);
+        }
+        if (now >= sCross.reportAt) {
+            const int8_t room = gPlayState->roomCtx.curRoom.num;
+            sCross.active = false;
+            if (room == sCross.fromRoom && sCrossRetries < 2) {
+                // The test placement did not hold (the game moved the Link away); try the same door again.
+                sCrossRetries++;
+                sRetryAt = now + std::chrono::seconds(3);
+                SPDLOG_INFO("[Coop] TEST: cross {}: still in room {}; retry {} in 3 s", sCross.index, room,
+                            sCrossRetries);
+                return;
+            }
+            SPDLOG_INFO("[Coop] TEST: cross {}: room {} -> {} ({} retries)", sCross.index, sCross.fromRoom, room,
+                        sCrossRetries);
+            sCrossRetries = 0;
+            sNextCross++;
+        }
+        return;
+    }
+    // A short walk 2 s before: right after a door the Link stands on the door's own collision, and the game puts it
+    // back there when it is moved away; a few steps off it first.
+    static size_t sNudged = SIZE_MAX;
+    if (sNextCross < steps.size() && sNudged != sNextCross && GameplaySeconds() + 2 >= steps[sNextCross].atSeconds &&
+        NoTransitionInProgress() && !Rooms::MoveInProgress()) {
+        sNudged = sNextCross;
+        sStickYaw = GET_PLAYER(gPlayState)->actor.shape.rot.y;
+        sWalkUntil = now + std::chrono::milliseconds(800);
+    }
+    if (sNextCross < steps.size() && GameplaySeconds() >= steps[sNextCross].atSeconds && NoTransitionInProgress() &&
+        !Rooms::MoveInProgress() && now >= sWalkUntil && now >= sRetryAt) {
+        StartCross(steps[sNextCross].value);
     }
 }
 
@@ -538,7 +666,25 @@ void UpdateHealthTests() {
     }
 }
 
+// --coop-test-log-transitions: the scene's rooms and transition actors (doors, room planes), to pick test routes.
+void OnRoomInitLogTransitions(s8 sceneId, s8 roomNum) {
+    if (!GetLaunchOptions().testLogTransitions || gPlayState == nullptr) {
+        return;
+    }
+    PlayState* play = gPlayState;
+    SPDLOG_INFO("[Coop] TEST: transitions of scene {} (room {} of {}): {}", sceneId, roomNum, play->roomList.count,
+                play->transitionActors.count);
+    for (int i = 0; i < play->transitionActors.count; i++) {
+        const TransitionActorEntry& t = play->transitionActors.list[i];
+        const int16_t id = static_cast<int16_t>(t.id < 0 ? -t.id : t.id) & 0x1FFF;
+        SPDLOG_INFO("[Coop] TEST: transition {}: {} rooms {}/{} pos ({}, {}, {}) rotY 0x{:04X} params 0x{:04X}", i,
+                    id < ACTOR_ID_MAX ? Enemies::TypeName(id) : "?", t.sides[0].room, t.sides[1].room, t.pos.x, t.pos.y,
+                    t.pos.z, static_cast<uint16_t>(t.rotY), t.params);
+    }
+}
+
 void RegisterTestHooks() {
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRoomInit>(OnRoomInitLogTransitions);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPassPlayerInputs>(OnPassPlayerInputs);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
@@ -585,6 +731,7 @@ void Frame() {
         ApproachNearestEnemy(nearSteps[sNextNear++].value);
     }
     UpdateHealthTests();
+    UpdateCross();
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;

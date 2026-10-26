@@ -324,6 +324,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             options.testKeepHealth = true;
         } else if (arg == "--coop-test-log-health") {
             options.testLogHealth = true;
+        } else if (arg == "--coop-test-log-transitions") {
+            options.testLogTransitions = true;
         } else if (arg == "--coop-test-spawn") {
             const char* value = takeValue();
             LaunchOptions::TimedSpawn timed;
@@ -443,6 +445,15 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 (arg == "--coop-test-hurt" ? options.testHurt : options.testHealth).push_back(timed);
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not <health units (0-320)>@<seconds>", arg, value));
+            }
+        } else if (arg == "--coop-test-cross") {
+            const char* value = takeValue();
+            LaunchOptions::TimedValue timed;
+            if (value != nullptr && ParseTimed(value, false, timed) && timed.value >= 0 && timed.value < 256) {
+                options.testCross.push_back(timed);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-cross: '{}' is not <transition index (0-255)>@<seconds>", value));
             }
         } else if (arg == "--coop-test-near") {
             const char* value = takeValue();
