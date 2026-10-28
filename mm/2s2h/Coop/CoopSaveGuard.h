@@ -19,6 +19,13 @@ bool Coop_IsClientInSession(void);
 
 #ifdef __cplusplus
 }
+
+namespace Coop {
+// Game thread, every frame: whether this game is connected to a host as a client (in a session or not yet).
+void SetConnectedClient(bool connected);
+// Save writes let through while connected to a host as a client (b-save-write; must stay 0).
+int SaveWritesWhileClient();
+} // namespace Coop
 #endif
 
 #endif // COOP_SAVE_GUARD_H

@@ -10,6 +10,9 @@ namespace Coop {
 namespace {
 
 std::atomic<bool> sClientInSession = false;
+// Saves are written from the game thread and from the save thread: both read these.
+std::atomic<bool> sConnectedClient = false;
+std::atomic<int> sWritesWhileClient = 0;
 // Test only: blocks the host's own writes while a --coop-test-* action emulates a save point.
 const char* sTestSuppression = nullptr;
 
@@ -41,6 +44,14 @@ void SetTestSaveSuppression(const char* why) {
     sTestSuppression = why;
 }
 
+void SetConnectedClient(bool connected) {
+    sConnectedClient.store(connected);
+}
+
+int SaveWritesWhileClient() {
+    return sWritesWhileClient.load();
+}
+
 } // namespace Coop
 
 extern "C" bool Coop_IsClientInSession(void) {
@@ -53,6 +64,10 @@ extern "C" bool Coop_BlocksSave(const char* reason) {
         return true;
     }
     if (!Coop::sClientInSession.load()) {
+        if (Coop::sConnectedClient.load()) {
+            const int n = ++Coop::sWritesWhileClient;
+            SPDLOG_WARN("[Coop] b-save-write: {} while connected to a host as a client ({} so far)", reason, n);
+        }
         return false;
     }
     SPDLOG_WARN("[Coop] Save blocked ({}): client in a coop session plays on the host's save", reason);

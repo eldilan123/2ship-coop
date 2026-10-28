@@ -19,6 +19,7 @@
 #include "CoopPuppet.h"
 #include "CoopRooms.h"
 #include "CoopSession.h"
+#include "CoopShared.h"
 #include "CoopTargeting.h"
 #include "CoopTest.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -156,6 +157,7 @@ void OnFrame() {
     Projectiles::Frame();
     Enemies::Frame();
     EnemyHealth::Frame();
+    Shared::Frame();
     Test::Frame();
     LogNetStats();
     CheckQuitAfter();

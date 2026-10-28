@@ -277,6 +277,34 @@ bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
     return true;
 }
 
+bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
+    const char* colon = text != nullptr ? std::strchr(text, ':') : nullptr;
+    const char* at = text != nullptr ? std::strchr(text, '@') : nullptr;
+    if (colon == nullptr || at == nullptr || at < colon) {
+        return false;
+    }
+    const std::string kind(text, colon - text);
+    const std::string value(colon + 1, at - colon - 1);
+    long number = 0, seconds = 0;
+    uint16_t flag = 0;
+    bool ok = false;
+    if (kind == "item") {
+        ok = ParseInt(value.c_str(), 0, 0xFF, number);
+    } else if (kind == "rupees") {
+        ok = ParseInt(value.c_str(), -999, 999, number);
+    } else if (kind == "week") {
+        ok = ParseHex16(value.c_str(), flag) && (flag >> 8) < 100 && (flag & 0xFF) != 0;
+        number = flag;
+    } else if (kind == "switch") {
+        ok = ParseInt(value.c_str(), 0, 0x7F, number);
+    }
+    if (!ok || !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+        return false;
+    }
+    out = { kind, static_cast<int>(number), static_cast<int>(seconds) };
+    return true;
+}
+
 } // namespace
 
 const LaunchOptions& GetLaunchOptions() {
@@ -493,6 +521,15 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.testVisitRoomsAt = static_cast<int>(seconds);
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("--coop-test-visit-rooms: '{}' is not <seconds>", value));
+            }
+        } else if (arg == "--coop-test-change") {
+            const char* value = takeValue();
+            LaunchOptions::TimedChange change;
+            if (value != nullptr && ParseChange(value, change)) {
+                options.testChange.push_back(change);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format(
+                    "--coop-test-change: '{}' is not <item:id|rupees:n|week:hexflag|switch:flag>@<seconds>", value));
             }
         } else if (arg == "--coop-test-hold") {
             const char* value = takeValue();

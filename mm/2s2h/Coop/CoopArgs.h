@@ -119,6 +119,15 @@ struct LaunchOptions {
         int atSeconds;
     };
     std::vector<TimedHold> testHold;
+    // Both: change this game's shared state with the game's own functions (shared state tests): "item:<id>"
+    // (Item_Give), "rupees:<n>" (Rupees_ChangeBy, n may be negative), "week:<hex packed flag>" (SET_WEEKEVENTREG),
+    // "switch:<flag>" (Flags_SetSwitch in the current scene)
+    struct TimedChange {
+        std::string kind;
+        int value;
+        int atSeconds;
+    };
+    std::vector<TimedChange> testChange;
     // Host: move the local Link to another room of the scene with the room move (room, position)
     struct TimedRoom {
         int room;

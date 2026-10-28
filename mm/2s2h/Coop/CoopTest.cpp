@@ -18,6 +18,7 @@
 #include "CoopProjectiles.h"
 #include "CoopRooms.h"
 #include "CoopSession.h"
+#include "CoopShared.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -397,6 +398,7 @@ void UpdateEnemyTests() {
         Projectiles::TestFuzz();
         PlayerHits::TestFuzz();
         Rooms::TestFuzz();
+        Shared::TestFuzz();
     }
 }
 
@@ -549,6 +551,29 @@ struct Hold {
 };
 Hold sHold;
 size_t sNextHold = 0;
+
+// --coop-test-change: this game's shared state changed through the game's own functions.
+size_t sNextChange = 0;
+
+void UpdateChanges() {
+    const auto& changes = GetLaunchOptions().testChange;
+    if (sNextChange >= changes.size() || GameplaySeconds() < changes[sNextChange].atSeconds ||
+        !NoTransitionInProgress()) {
+        return;
+    }
+    const LaunchOptions::TimedChange& c = changes[sNextChange++];
+    if (c.kind == "item") {
+        Item_Give(gPlayState, static_cast<u8>(c.value));
+    } else if (c.kind == "rupees") {
+        Rupees_ChangeBy(static_cast<s16>(c.value));
+    } else if (c.kind == "week") {
+        SET_WEEKEVENTREG(c.value);
+    } else if (c.kind == "switch") {
+        Flags_SetSwitch(gPlayState, c.value);
+    }
+    SPDLOG_INFO("[Coop] TEST: change {} 0x{:X} (rupees {}, accumulator {})", c.kind, c.value,
+                gSaveContext.save.saveInfo.playerData.rupees, gSaveContext.rupeeAccumulator);
+}
 
 void PressStart() {
     Input* input = CONTROLLER1(&gPlayState->state);
@@ -933,6 +958,7 @@ void Frame() {
     UpdateHealthTests();
     UpdateCross();
     UpdateHolds();
+    UpdateChanges();
     LogRoomEnemies();
     // --coop-test-room: the host taken to another room by the room move itself.
     static size_t sNextRoom = 0;
