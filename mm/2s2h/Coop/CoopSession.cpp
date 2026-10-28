@@ -8,6 +8,7 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopInventory.h"
 #include "CoopPlayerSync.h"
 #include "CoopSaveGuard.h"
 #include "CoopSnapshot.h"
@@ -127,6 +128,7 @@ void ClientOnEnterDenied(uint32_t, const nlohmann::json& message) {
 // is not called: it reads the client's own file and would erase its owl save.
 void ClientEnterGameplay(const Snapshot::Parsed& snapshot) {
     Snapshot::ApplyShared(snapshot, true);
+    Inventory::OnEnteredSession();
 
     // A valid slot index keeps the flash page tables in bounds; every write is blocked by the session flag anyway.
     gSaveContext.fileNum = 0;
@@ -220,7 +222,10 @@ void ClientOnSnapshot(uint32_t, const std::vector<uint8_t>& bytes) {
 
     sLastSnapshotSeq = h.seq;
     sLastHost = h;
+    // The shared inventory comes with inv_state now: the snapshot leaves it as it is.
+    Inventory::BeforeSnapshot();
     Snapshot::ApplyShared(snapshot, false);
+    Inventory::AfterSnapshot();
     SPDLOG_INFO("[Coop] Applied snapshot #{} ({}): host scene {} entrance 0x{:04X} room {}", h.seq,
                 Snapshot::ReasonName(h.reason), h.sceneId, static_cast<uint16_t>(h.entrance), h.roomNum);
 

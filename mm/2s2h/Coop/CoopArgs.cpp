@@ -298,7 +298,18 @@ bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
     } else if (kind == "switch") {
         ok = ParseInt(value.c_str(), 0, 0x7F, number);
     }
-    if (!ok || !ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
+    if (!ok) {
+        return false;
+    }
+    if (at[1] == 'w') {
+        const long long unixMs = std::atoll(at + 2);
+        if (unixMs <= 1600000000000ll) {
+            return false;
+        }
+        out = { kind, static_cast<int>(number), 0, unixMs };
+        return true;
+    }
+    if (!ParseInt(at + 1, 0, 24 * 60 * 60, seconds)) {
         return false;
     }
     out = { kind, static_cast<int>(number), static_cast<int>(seconds) };

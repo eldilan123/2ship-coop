@@ -1,5 +1,6 @@
 #include "CoopShared.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -71,7 +72,9 @@ const std::vector<Field>& Fields() {
              } });
         // Rupees still in the accumulator count: Interface_Update moves them a few per frame.
         f.push_back({ "rupees", Group::Inventory, [](std::vector<uint8_t>& out) {
-                         const s32 v = gSaveContext.save.saveInfo.playerData.rupees + gSaveContext.rupeeAccumulator;
+                         const s32 v = std::clamp<s32>(gSaveContext.save.saveInfo.playerData.rupees +
+                                                           gSaveContext.rupeeAccumulator,
+                                                       0, CUR_CAPACITY(UPG_WALLET));
                          Put(out, &v, sizeof(v));
                      } });
         f.push_back({ "swordHealth", Group::Inventory, RAW(gSaveContext.save.saveInfo.playerData.swordHealth) });

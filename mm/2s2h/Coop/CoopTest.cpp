@@ -14,6 +14,7 @@
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
+#include "CoopInventory.h"
 #include "CoopPlayerHits.h"
 #include "CoopProjectiles.h"
 #include "CoopRooms.h"
@@ -399,6 +400,7 @@ void UpdateEnemyTests() {
         PlayerHits::TestFuzz();
         Rooms::TestFuzz();
         Shared::TestFuzz();
+        Inventory::TestFuzz();
     }
 }
 
@@ -557,8 +559,14 @@ size_t sNextChange = 0;
 
 void UpdateChanges() {
     const auto& changes = GetLaunchOptions().testChange;
-    if (sNextChange >= changes.size() || GameplaySeconds() < changes[sNextChange].atSeconds ||
-        !NoTransitionInProgress()) {
+    if (sNextChange >= changes.size() || !NoTransitionInProgress()) {
+        return;
+    }
+    const int64_t wallMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    const LaunchOptions::TimedChange& next = changes[sNextChange];
+    if (next.atUnixMs > 0 ? wallMs < next.atUnixMs : GameplaySeconds() < next.atSeconds) {
         return;
     }
     const LaunchOptions::TimedChange& c = changes[sNextChange++];

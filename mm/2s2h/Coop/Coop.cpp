@@ -13,6 +13,7 @@
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyHealth.h"
+#include "CoopInventory.h"
 #include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
 #include "CoopProjectiles.h"
@@ -157,6 +158,7 @@ void OnFrame() {
     Projectiles::Frame();
     Enemies::Frame();
     EnemyHealth::Frame();
+    Inventory::Frame();
     Shared::Frame();
     Test::Frame();
     LogNetStats();
