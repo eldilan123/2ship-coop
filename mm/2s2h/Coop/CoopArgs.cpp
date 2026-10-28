@@ -265,6 +265,8 @@ bool ParseKill(const char* text, LaunchOptions::TimedValue& out) {
     long netId = -1, seconds = 0;
     if (which == "todos" || which == "all") {
         netId = -2;
+    } else if (which == "cuarto" || which == "room") {
+        netId = -3;
     } else if (which != "ultimo" && which != "last" && !ParseInt(which.c_str(), 1, 0xFFFF, netId)) {
         return false;
     }
@@ -383,7 +385,7 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                 options.testKill.push_back(timed);
             } else if (value != nullptr) {
                 options.warnings.push_back(
-                    fmt::format("--coop-test-kill: '{}' is not <netId|ultimo>@<seconds>", value));
+                    fmt::format("--coop-test-kill: '{}' is not <netId|ultimo|todos|cuarto>@<seconds>", value));
             }
         } else if (arg == "--coop-test-form") {
             const char* value = takeValue();
@@ -454,6 +456,69 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             } else if (value != nullptr) {
                 options.warnings.push_back(
                     fmt::format("--coop-test-cross: '{}' is not <transition index (0-255)>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-cross-wall") {
+            // N@<unix ms>: the same cross at a wall-clock time, so two games cross together (tests of simultaneous
+            // crossings; each game's own clock starts when it reaches gameplay).
+            const char* value = takeValue();
+            const char* at = value != nullptr ? std::strchr(value, '@') : nullptr;
+            long index = -1;
+            long long unixMs = 0;
+            if (at != nullptr && ParseInt(std::string(value, at - value).c_str(), 0, 255, index) &&
+                (unixMs = std::atoll(at + 1)) > 1600000000000ll) {
+                options.testCross.push_back({ static_cast<int>(index), 0, unixMs });
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-cross-wall: '{}' is not <transition index>@<unix ms>", value));
+            }
+        } else if (arg == "--coop-test-room") {
+            const char* value = takeValue();
+            LaunchOptions::TimedRoom r = {};
+            long long unixMs = 0;
+            const bool wall =
+                value != nullptr && std::sscanf(value, "%d:%f,%f,%f@w%lld", &r.room, &r.x, &r.y, &r.z, &unixMs) == 5;
+            r.atUnixMs = wall ? unixMs : 0;
+            if (value != nullptr &&
+                (wall || std::sscanf(value, "%d:%f,%f,%f@%d", &r.room, &r.x, &r.y, &r.z, &r.atSeconds) == 5) &&
+                r.room >= 0 && r.room < 64 && r.atSeconds >= 0) {
+                options.testRoom.push_back(r);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-room: '{}' is not <room>:<x>,<y>,<z>@<seconds>", value));
+            }
+        } else if (arg == "--coop-test-visit-rooms") {
+            const char* value = takeValue();
+            long seconds = 0;
+            if (value != nullptr && ParseInt(value, 0, 24 * 60 * 60, seconds)) {
+                options.testVisitRoomsAt = static_cast<int>(seconds);
+            } else if (value != nullptr) {
+                options.warnings.push_back(fmt::format("--coop-test-visit-rooms: '{}' is not <seconds>", value));
+            }
+        } else if (arg == "--coop-test-hold") {
+            const char* value = takeValue();
+            LaunchOptions::TimedHold hold;
+            bool ok = false;
+            if (value != nullptr) {
+                const std::string text(value);
+                const size_t colon = text.find(':');
+                const size_t at = text.find('@');
+                long ms = 0;
+                long seconds = 0;
+                if (colon != std::string::npos && at != std::string::npos && colon < at) {
+                    hold.kind = text.substr(0, colon);
+                    ok = (hold.kind == "pause" || hold.kind == "text" || hold.kind == "cutscene" ||
+                          hold.kind == "knock") &&
+                         ParseInt(text.substr(colon + 1, at - colon - 1).c_str(), 100, 60000, ms) &&
+                         ParseInt(text.substr(at + 1).c_str(), 0, 24 * 60 * 60, seconds);
+                    hold.ms = static_cast<int>(ms);
+                    hold.atSeconds = static_cast<int>(seconds);
+                }
+            }
+            if (ok) {
+                options.testHold.push_back(hold);
+            } else if (value != nullptr) {
+                options.warnings.push_back(
+                    fmt::format("--coop-test-hold: '{}' is not <pause|text|cutscene|knock>:<ms>@<seconds>", value));
             }
         } else if (arg == "--coop-test-near") {
             const char* value = takeValue();

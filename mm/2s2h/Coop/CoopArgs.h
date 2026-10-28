@@ -32,6 +32,7 @@ struct LaunchOptions {
     struct TimedValue {
         int value;
         int atSeconds;
+        int64_t atUnixMs = 0; // When set (--coop-test-cross-wall): this wall-clock time instead of atSeconds
     };
     std::vector<TimedValue> testGoto;     // value = entrance
     std::vector<TimedValue> testTimeJump; // value = minutes
@@ -60,7 +61,8 @@ struct LaunchOptions {
         int atSeconds;
     };
     std::vector<TimedSpawn> testSpawn;
-    // Host: value = netId, -1 = the newest enemy still alive, -2 = every enemy spawned at run time ("todos")
+    // Host: value = netId, -1 = the newest enemy still alive, -2 = every enemy spawned at run time ("todos"), -3 =
+    // every enemy alive in the host's room ("cuarto")
     std::vector<TimedValue> testKill;
     // Both: seconds after reaching gameplay to send malformed enemy channel messages to the other side
     std::optional<int> testFuzzEnemiesAt;
@@ -109,6 +111,26 @@ struct LaunchOptions {
     // Both: cross the scene's transition actor number `value` (place the Link in front of it, then walk through or
     // press A for a door; game input only)
     std::vector<TimedValue> testCross;
+    // Both: hold the local game in a state for `ms` (room move deferrals): "pause" (START to open and close the pause
+    // menu), "text" (a text box), "cutscene" (the Link's wait cutscene action), "knock" (knocked back every 400 ms)
+    struct TimedHold {
+        std::string kind;
+        int ms;
+        int atSeconds;
+    };
+    std::vector<TimedHold> testHold;
+    // Host: move the local Link to another room of the scene with the room move (room, position)
+    struct TimedRoom {
+        int room;
+        float x, y, z;
+        int atSeconds;
+        int64_t atUnixMs = 0; // "@w<unix ms>": at this wall-clock time instead
+    };
+    std::vector<TimedRoom> testRoom;
+    // Host: from these seconds on, the local Link taken through every room of the scene with the room move, one every
+    // 8 s, 120 units inside one of its doors (a survey: with --coop-test-log-transitions, each room's cutscenes and
+    // enemies)
+    std::optional<int> testVisitRoomsAt;
     // Both: first id of this game's projectile counter (tests the wrap past 65535)
     int testProjectileFirstId = 0;
     // Parse problems, logged once the logger exists

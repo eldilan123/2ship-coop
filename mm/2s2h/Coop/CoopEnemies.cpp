@@ -1984,6 +1984,23 @@ void TestKill(int netId) {
     if (!IsHosting()) {
         return;
     }
+    if (netId == -3) {
+        // Every enemy alive in the host's current room, the room's own included: the game then marks the room cleared
+        // by itself, as when a player defeats them (doors that wait for it open).
+        std::vector<Actor*> inRoom;
+        for (const auto& [id, enemy] : sHost) {
+            if (enemy.actor->update != nullptr && enemy.actor->room == gPlayState->roomCtx.curRoom.num) {
+                inRoom.push_back(enemy.actor);
+            }
+        }
+        SPDLOG_INFO("[Coop] TEST: killing every enemy in room {} ({})", gPlayState->roomCtx.curRoom.num, inRoom.size());
+        sTestKilling = true;
+        for (Actor* actor : inRoom) {
+            Actor_Kill(actor);
+        }
+        sTestKilling = false;
+        return;
+    }
     if (netId == -2) {
         // Every enemy spawned at run time (test enemies and what they spawned); room enemies stay.
         std::vector<Actor*> dynamic;

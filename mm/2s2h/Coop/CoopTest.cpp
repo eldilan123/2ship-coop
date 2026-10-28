@@ -348,7 +348,8 @@ void UpdateLocalChanges() {
     if (sNextPos < options.testPos.size() && seconds >= options.testPos[sNextPos].atSeconds) {
         const LaunchOptions::TimedPos& pos = options.testPos[sNextPos++];
         SPDLOG_INFO("[Coop] TEST: local position -> ({:.1f}, {:.1f}, {:.1f})", pos.x, pos.y, pos.z);
-        player->actor.world.pos = { pos.x, pos.y, pos.z };
+        // home.pos too: Player checks its move against walls from there (it is its previous position).
+        player->actor.world.pos = player->actor.home.pos = { pos.x, pos.y, pos.z };
     }
 }
 
@@ -409,18 +410,44 @@ void ApproachNearestEnemy(int distance) {
         return;
     }
     s16 yawFromEnemy = Math_Vec3f_Yaw(&enemy->world.pos, &player->actor.world.pos);
-    Vec3f pos = { enemy->world.pos.x + distance * Math_SinS(yawFromEnemy), enemy->world.pos.y + 50.0f,
-                  enemy->world.pos.z + distance * Math_CosS(yawFromEnemy) };
-    CollisionPoly* poly = nullptr;
-    s32 bgId = 0;
-    const f32 floor = BgCheck_EntityRaycastFloor5(&play->colCtx, &poly, &bgId, &player->actor, &pos);
-    if (poly != nullptr) {
+    Vec3f pos;
+    // The spot needs a floor that is not a scene exit and no wall between the enemy and it (with room for the Link):
+    // a flying enemy drifts to the edge of a field, a town gate or a building's door is a scene exit, and stepping on
+    // one would take the whole session to another scene. Otherwise the enemy's other side, otherwise nowhere.
+    bool found = false;
+    for (int side = 0; side < 2 && !found; side++) {
+        if (side == 1) {
+            yawFromEnemy = static_cast<s16>(yawFromEnemy + 0x8000);
+        }
+        const f32 dx = Math_SinS(yawFromEnemy), dz = Math_CosS(yawFromEnemy);
+        pos = { enemy->world.pos.x + distance * dx, enemy->world.pos.y + 50.0f, enemy->world.pos.z + distance * dz };
+        CollisionPoly* poly = nullptr;
+        s32 bgId = 0;
+        const f32 floor = BgCheck_EntityRaycastFloor5(&play->colCtx, &poly, &bgId, &player->actor, &pos);
+        if (poly == nullptr || SurfaceType_GetSceneExitIndex(&play->colCtx, poly, bgId) != 0) {
+            continue;
+        }
         pos.y = floor;
+        const f32 out = distance < 0 ? -30.0f : 30.0f;
+        Vec3f from = { enemy->world.pos.x, floor + 30.0f, enemy->world.pos.z };
+        Vec3f to = { pos.x + out * dx, floor + 30.0f, pos.z + out * dz };
+        Vec3f hit;
+        CollisionPoly* wall = nullptr;
+        s32 wallBgId = 0;
+        found = !BgCheck_EntityLineTest1(&play->colCtx, &from, &to, &hit, &wall, true, false, false, false, &wallBgId);
+    }
+    if (!found) {
+        SPDLOG_INFO("[Coop] TEST: no spot next to {} (no floor, a scene exit or a wall on both sides); the Link stays",
+                    Enemies::TypeName(enemy->id));
+        return;
     }
     // With a negative distance the Link ends up on the enemy's other side, still facing it.
     const s16 facing = static_cast<s16>(distance < 0 ? yawFromEnemy : yawFromEnemy + 0x8000);
+    // home.pos too: Player checks its move against walls from there (its previous position), and a wall crossed on the
+    // way (a scene exit among them) would stop it or take the exit.
     player->actor.world.pos = pos;
     player->actor.prevPos = pos;
+    player->actor.home.pos = pos;
     player->actor.shape.rot.y = player->actor.world.rot.y = player->yaw = facing;
     SPDLOG_INFO("[Coop] TEST: Link placed {} units from {} at ({:.0f}, {:.0f}, {:.0f})", distance,
                 Enemies::TypeName(enemy->id), pos.x, pos.y, pos.z);
@@ -511,6 +538,93 @@ void OnPassPlayerInputs(Input* input) {
     }
 }
 
+// --coop-test-hold: the local game held in a state (pause menu, text box, cutscene, knocked back), to test that
+// room moves wait for it. Game input and game functions only.
+struct Hold {
+    bool active = false;
+    std::string kind;
+    SteadyClock::time_point until = {};
+    SteadyClock::time_point nextKnock = {};
+    bool closing = false;
+};
+Hold sHold;
+size_t sNextHold = 0;
+
+void PressStart() {
+    Input* input = CONTROLLER1(&gPlayState->state);
+    input->cur.button |= BTN_START;
+    input->press.button |= BTN_START;
+}
+
+void UpdateHolds() {
+    const auto& holds = GetLaunchOptions().testHold;
+    PlayState* play = gPlayState;
+    Player* link = GET_PLAYER(play);
+    const auto now = SteadyClock::now();
+    if (!sHold.active) {
+        if (sNextHold < holds.size() && GameplaySeconds() >= holds[sNextHold].atSeconds && NoTransitionInProgress()) {
+            const LaunchOptions::TimedHold& h = holds[sNextHold++];
+            sHold = { true, h.kind, now + std::chrono::milliseconds(h.ms), now, false };
+            SPDLOG_INFO("[Coop] TEST: hold {} for {} ms", h.kind, h.ms);
+            if (h.kind == "pause") {
+                PressStart();
+            } else if (h.kind == "text") {
+                Message_StartTextbox(play, 0x5E6, nullptr);
+            } else if (h.kind == "cutscene") {
+                play->tryPlayerCsAction(play, nullptr, PLAYER_CSACTION_WAIT);
+            }
+        }
+        return;
+    }
+    if (sHold.kind == "knock" && now >= sHold.nextKnock && now < sHold.until) {
+        sHold.nextKnock = now + std::chrono::milliseconds(400);
+        // A knockback request, as an enemy's attack makes one (z_actor.c, func_800B8D10); a weak one, each time the
+        // other way, so the Link reels on the spot instead of being pushed out of the room.
+        static bool sFlip = false;
+        sFlip = !sFlip;
+        func_800B8D10(play, &link->actor, 1.0f, static_cast<s16>(link->actor.shape.rot.y + (sFlip ? 0x8000 : 0)), 2.0f,
+                      2, 0);
+    }
+    if (now < sHold.until) {
+        return;
+    }
+    if (sHold.kind == "pause") {
+        // START again once the menu is fully open; until it is closed.
+        if (IS_PAUSED(&play->pauseCtx)) {
+            if (play->pauseCtx.state == PAUSE_STATE_MAIN) {
+                PressStart();
+            }
+            return;
+        }
+    } else if (sHold.kind == "text") {
+        if (play->msgCtx.msgMode != MSGMODE_NONE) {
+            // Closed once, as the game closes a text box (each call would restart the closing timer); if it is still
+            // open 3 s later the test leaves the message system idle.
+            if (!sHold.closing) {
+                sHold.closing = true;
+                Message_CloseTextbox(play);
+            } else if (now >= sHold.until + std::chrono::seconds(3)) {
+                SPDLOG_INFO("[Coop] TEST: hold text: forced closed (msgMode {})",
+                            static_cast<int>(play->msgCtx.msgMode));
+                play->msgCtx.msgMode = MSGMODE_NONE;
+            }
+            return;
+        }
+    } else if (sHold.kind == "cutscene") {
+        if (link->csAction != PLAYER_CSACTION_NONE && link->csAction != PLAYER_CSACTION_END) {
+            // Player_TryCsAction refuses a new action while one is running; the Link's own cutscene action handles
+            // END (back to normal play) when it is set directly, as cutscene actors do.
+            link->csAction = PLAYER_CSACTION_END;
+            return;
+        }
+        if (link->csAction != PLAYER_CSACTION_NONE) {
+            return; // Ending
+        }
+    }
+    SPDLOG_INFO("[Coop] TEST: hold {} over", sHold.kind);
+    sHold.active = false;
+}
+
 // --coop-test-cross: the Link in front of a transition actor (door or room plane), facing it, on the side of its
 // current room; then A for a door or the stick held for a room plane.
 void StartCross(int index) {
@@ -528,7 +642,10 @@ void StartCross(int index) {
     const int8_t cur = play->roomCtx.curRoom.num;
     // sides[1] is the room the transition faces (in Woodfall, room 2 lies along the facing of door 2, rooms 1/2).
     const bool inFront = t.sides[1].room == cur;
-    const float distance = door ? 30.0f : 80.0f; // Door_Shutter notices the player under 50 along its normal
+    // Door_Shutter notices the player under 50 along its normal. A room plane (En_Holl; not the vertical kinds) is
+    // walked across from out of its range (200 for the visible kind), as a player would, to out of it on the other
+    // side (where the old room is dropped).
+    const float distance = door ? 30.0f : 250.0f;
     const float sign = inFront ? 1.0f : -1.0f;
     const Vec3f pos = { t.pos.x + Math_SinS(yaw) * distance * sign, t.pos.y + 20.0f,
                         t.pos.z + Math_CosS(yaw) * distance * sign };
@@ -540,8 +657,11 @@ void StartCross(int index) {
     const f32 floorY = BgCheck_EntityRaycastFloor3(&play->colCtx, &poly, &bgId, &probe);
     // Off any moving floor first (a door's own collision is one): the game would carry the Link back on it.
     player->actor.floorBgId = BGCHECK_SCENE;
+    // home.pos too: Player checks its move against walls from there (it is its previous position); without it a long
+    // jump stops at the first wall in between.
     player->actor.world.pos = pos;
     player->actor.prevPos = pos;
+    player->actor.home.pos = pos;
     player->actor.shape.rot.y = player->actor.world.rot.y = player->yaw = facing;
     player->speedXZ = 0.0f;
     sStickYaw = facing;
@@ -549,7 +669,7 @@ void StartCross(int index) {
     sCross = { true, index,  cur, door ? 3 : 0, now + std::chrono::milliseconds(400), now + std::chrono::seconds(6),
                pos,  facing, 0 };
     if (!door) {
-        sWalkUntil = now + std::chrono::milliseconds(2500);
+        sWalkUntil = now + std::chrono::milliseconds(3500);
     }
     SPDLOG_INFO("[Coop] TEST: crossing transition {} ({}, rooms {}/{}) from room {} at ({:.0f}, {:.0f}, {:.0f}); floor "
                 "{:.0f}",
@@ -559,6 +679,19 @@ void StartCross(int index) {
 void UpdateCross() {
     const auto& steps = GetLaunchOptions().testCross;
     const auto now = SteadyClock::now();
+    // A door that does not open can answer the test's A presses with a message: closed when the attempt ends, as a
+    // player would (once, as the game closes a text box; the message system left idle if it is still open 3 s later).
+    static SteadyClock::time_point sClosingTextSince = {};
+    if (sClosingTextSince != SteadyClock::time_point{}) {
+        if (gPlayState->msgCtx.msgMode == MSGMODE_NONE) {
+            sClosingTextSince = {};
+        } else if (now - sClosingTextSince > std::chrono::seconds(3)) {
+            SPDLOG_INFO("[Coop] TEST: cross: message forced closed (msgMode {})",
+                        static_cast<int>(gPlayState->msgCtx.msgMode));
+            gPlayState->msgCtx.msgMode = MSGMODE_NONE;
+            sClosingTextSince = {};
+        }
+    }
     if (sCross.active) {
         // The game sometimes puts the Link back where it stood on the next frame; place it again (before any press).
         Player* link = GET_PLAYER(gPlayState);
@@ -568,6 +701,7 @@ void UpdateCross() {
             link->actor.floorBgId = BGCHECK_SCENE;
             link->actor.world.pos = sCross.placed;
             link->actor.prevPos = sCross.placed;
+            link->actor.home.pos = sCross.placed;
             link->actor.shape.rot.y = link->actor.world.rot.y = link->yaw = sCross.facing;
             link->speedXZ = 0.0f;
             sCross.nextPress = now + std::chrono::milliseconds(400);
@@ -581,9 +715,23 @@ void UpdateCross() {
             sCross.pressesLeft--;
             sCross.nextPress = now + std::chrono::milliseconds(700);
         }
+        // Done as soon as the room changed and the door (a cutscene) is over, so tests can cross quickly. A room plane
+        // changes rooms before the Link is through it: only after the walk there.
+        const int8_t current = gPlayState->roomCtx.curRoom.num;
+        if (current != sCross.fromRoom && current >= 0 && now >= sWalkUntil &&
+            GET_PLAYER(gPlayState)->csAction == PLAYER_CSACTION_NONE && !Play_InCsMode(gPlayState) &&
+            sCross.reportAt - now > std::chrono::milliseconds(300)) {
+            sCross.reportAt = now + std::chrono::milliseconds(300);
+        }
         if (now >= sCross.reportAt) {
             const int8_t room = gPlayState->roomCtx.curRoom.num;
             sCross.active = false;
+            if (gPlayState->msgCtx.msgMode != MSGMODE_NONE && sClosingTextSince == SteadyClock::time_point{}) {
+                SPDLOG_INFO("[Coop] TEST: cross {}: closing the message the door showed (text 0x{:X})", sCross.index,
+                            gPlayState->msgCtx.currentTextId);
+                Message_CloseTextbox(gPlayState);
+                sClosingTextSince = now;
+            }
             if (room == sCross.fromRoom && sCrossRetries < 2) {
                 // The test placement did not hold (the game moved the Link away); try the same door again.
                 sCrossRetries++;
@@ -602,13 +750,20 @@ void UpdateCross() {
     // A short walk 2 s before: right after a door the Link stands on the door's own collision, and the game puts it
     // back there when it is moved away; a few steps off it first.
     static size_t sNudged = SIZE_MAX;
-    if (sNextCross < steps.size() && sNudged != sNextCross && GameplaySeconds() + 2 >= steps[sNextCross].atSeconds &&
+    const int64_t unixMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    auto dueIn = [&](const LaunchOptions::TimedValue& step, int64_t aheadMs) {
+        return step.atUnixMs > 0 ? unixMs + aheadMs >= step.atUnixMs
+                                 : (GameplaySeconds() + aheadMs / 1000) >= step.atSeconds;
+    };
+    if (sNextCross < steps.size() && sNudged != sNextCross && dueIn(steps[sNextCross], 2000) &&
         NoTransitionInProgress() && !Rooms::MoveInProgress()) {
         sNudged = sNextCross;
         sStickYaw = GET_PLAYER(gPlayState)->actor.shape.rot.y;
         sWalkUntil = now + std::chrono::milliseconds(800);
     }
-    if (sNextCross < steps.size() && GameplaySeconds() >= steps[sNextCross].atSeconds && NoTransitionInProgress() &&
+    if (sNextCross < steps.size() && dueIn(steps[sNextCross], 0) && NoTransitionInProgress() &&
         !Rooms::MoveInProgress() && now >= sWalkUntil && now >= sRetryAt) {
         StartCross(steps[sNextCross].value);
     }
@@ -683,11 +838,56 @@ void OnRoomInitLogTransitions(s8 sceneId, s8 roomNum) {
     }
 }
 
+// --coop-test-log-transitions also lists the enemies of the room 1 s after each room change, and whether the room is
+// marked cleared (doors that wait for it).
+void LogRoomEnemies() {
+    static int8_t sRoom = -1;
+    static SteadyClock::time_point sDueAt = {};
+    PlayState* play = gPlayState;
+    if (!GetLaunchOptions().testLogTransitions) {
+        return;
+    }
+    const auto now = SteadyClock::now();
+    const int8_t room = play->roomCtx.curRoom.num;
+    if (room != sRoom) {
+        sRoom = room;
+        sDueAt = now + std::chrono::seconds(1);
+        return;
+    }
+    if (room < 0 || sDueAt == SteadyClock::time_point{} || now < sDueAt) {
+        return;
+    }
+    sDueAt = {};
+    std::string list;
+    int count = 0;
+    for (Actor* actor = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
+        list += fmt::format("{}{} 0x{:04X} room {}", count == 0 ? "" : ", ", Enemies::TypeName(actor->id),
+                            static_cast<uint16_t>(actor->params), actor->room);
+        count++;
+    }
+    SPDLOG_INFO("[Coop] TEST: room {} enemies {} (cleared {}, cleared for now {}): {}", room, count,
+                Flags_GetClear(play, room) ? 1 : 0, Flags_GetClearTemp(play, room) ? 1 : 0, list);
+}
+
 void RegisterTestHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRoomInit>(OnRoomInitLogTransitions);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPassPlayerInputs>(OnPassPlayerInputs);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainFinish>(OnGameStateMainFinish);
+    // --coop-test-log-transitions also names the actor cutscenes that start (a room's entry cutscene holds the Link).
+    REGISTER_VB_SHOULD(VB_START_CUTSCENE, {
+        if (!GetLaunchOptions().testLogTransitions || gPlayState == nullptr || !*should) {
+            return;
+        }
+        const s16 csId = *va_arg(args, s16*);
+        Actor* actor = va_arg(args, Actor*);
+        if (csId > CS_ID_NONE && CutsceneManager_GetCurrentCsId() == CS_ID_NONE) {
+            SPDLOG_INFO("[Coop] TEST: cutscene {} starts ({} params 0x{:04X} in room {}; Link in room {})", csId,
+                        actor != nullptr ? Enemies::TypeName(actor->id) : "no actor",
+                        actor != nullptr ? static_cast<uint16_t>(actor->params) : 0,
+                        actor != nullptr ? actor->room : -1, gPlayState->roomCtx.curRoom.num);
+        }
+    });
 }
 
 } // namespace
@@ -732,6 +932,55 @@ void Frame() {
     }
     UpdateHealthTests();
     UpdateCross();
+    UpdateHolds();
+    LogRoomEnemies();
+    // --coop-test-room: the host taken to another room by the room move itself.
+    static size_t sNextRoom = 0;
+    const auto& rooms = GetLaunchOptions().testRoom;
+    const int64_t wallMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    if (sNextRoom < rooms.size() &&
+        (rooms[sNextRoom].atUnixMs > 0 ? wallMs >= rooms[sNextRoom].atUnixMs
+                                       : GameplaySeconds() >= rooms[sNextRoom].atSeconds) &&
+        NoTransitionInProgress() && !Rooms::MoveInProgress()) {
+        const LaunchOptions::TimedRoom& r = rooms[sNextRoom++];
+        Rooms::TestMoveTo(static_cast<int8_t>(r.room), { r.x, r.y, r.z });
+    }
+    // --coop-test-visit-rooms: every room of the scene in turn, 120 units inside the first door or room plane that
+    // leads into it, on the floor there.
+    static int sVisitRoom = 0;
+    static SteadyClock::time_point sVisitNext = {};
+    const std::optional<int>& visitAt = GetLaunchOptions().testVisitRoomsAt;
+    if (visitAt.has_value() && GameplaySeconds() >= *visitAt && sVisitRoom < gPlayState->roomList.count &&
+        SteadyClock::now() >= sVisitNext && NoTransitionInProgress() && !Rooms::MoveInProgress()) {
+        PlayState* play = gPlayState;
+        const int room = sVisitRoom++;
+        sVisitNext = SteadyClock::now() + std::chrono::seconds(8);
+        bool found = false;
+        for (int i = 0; i < play->transitionActors.count && !found; i++) {
+            const TransitionActorEntry& t = play->transitionActors.list[i];
+            if (t.sides[0].room == t.sides[1].room || (t.sides[0].room != room && t.sides[1].room != room)) {
+                continue;
+            }
+            const s16 yaw = DEG_TO_BINANG((t.rotY >> 7) & 0x1FF);
+            const float sign = t.sides[1].room == room ? 1.0f : -1.0f;
+            Vec3f probe = { t.pos.x + Math_SinS(yaw) * 120.0f * sign, t.pos.y + 60.0f,
+                            t.pos.z + Math_CosS(yaw) * 120.0f * sign };
+            CollisionPoly* poly = nullptr;
+            s32 bgId = 0;
+            const f32 floorY = BgCheck_EntityRaycastFloor3(&play->colCtx, &poly, &bgId, &probe);
+            if (poly != nullptr && floorY > t.pos.y - 100.0f) {
+                found = true;
+                SPDLOG_INFO("[Coop] TEST: visiting room {} by transition {} at ({:.0f}, {:.0f}, {:.0f})", room, i,
+                            probe.x, floorY, probe.z);
+                Rooms::TestMoveTo(static_cast<int8_t>(room), { probe.x, floorY, probe.z });
+            }
+        }
+        if (!found) {
+            SPDLOG_INFO("[Coop] TEST: room {} has no door with a floor inside to arrive by", room);
+        }
+    }
     // --coop-test-keep-health: the host's Link stands still among the test enemies, which really attack it.
     if (GetLaunchOptions().testKeepHealth) {
         gSaveContext.save.saveInfo.playerData.health = gSaveContext.save.saveInfo.playerData.healthCapacity;
