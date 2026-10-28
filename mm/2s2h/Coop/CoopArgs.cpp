@@ -300,6 +300,8 @@ bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
     } else if (kind == "chest" || kind == "drop") {
         ok = ParseHex16(value.c_str(), flag);
         number = flag;
+    } else if (kind == "use") {
+        ok = ParseInt(value.c_str(), 0, 0xFF, number);
     } else if (kind == "open" || kind == "pick") {
         ok = ParseInt(value.c_str(), 0, 0, number);
     }

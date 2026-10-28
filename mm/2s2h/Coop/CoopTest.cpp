@@ -603,6 +603,8 @@ void UpdateChanges() {
         SET_WEEKEVENTREG(c.value);
     } else if (c.kind == "switch") {
         Flags_SetSwitch(gPlayState, c.value);
+    } else if (c.kind == "use") {
+        Inventory_ChangeAmmo(static_cast<s16>(c.value), -1);
     } else if (c.kind == "chest" || c.kind == "drop") {
         Player* link = GET_PLAYER(gPlayState);
         const float dz = c.kind == "chest" ? 150.0f : -150.0f;
