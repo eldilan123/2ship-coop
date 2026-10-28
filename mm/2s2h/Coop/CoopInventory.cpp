@@ -335,6 +335,7 @@ struct ClientRecord {
     uint32_t lastSeq = 0;
     bool ackPending = true;
     std::vector<std::pair<uint32_t, std::string>> rejected;
+    std::map<uint32_t, std::vector<Op>> applied; // The last events applied, in case the client cancels one
 };
 std::map<uint32_t, ClientRecord> sClients;
 std::vector<int64_t> sLastSent;
@@ -454,11 +455,55 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
     }
     WriteAll(values, true);
     sApplied++;
+    c.applied[seq] = ops;
+    while (c.applied.size() > 64) {
+        c.applied.erase(c.applied.begin());
+    }
     for (const std::string& o : overdraws) {
         sOverdraws++;
         SPDLOG_INFO("[Coop] inv-overdraw: player {} seq {}: {} (kept within the unit's range)", from, seq, o);
     }
     SPDLOG_INFO("[Coop] inv-event: player {} seq {} applied: {}", from, seq, Describe(ops));
+}
+
+// The client gave up on an event (it waited too long for the answer): undone if it was applied and nothing changed the
+// same values since.
+void HostOnInvCancel(uint32_t from, const nlohmann::json& m) {
+    if (!IsHosting() || !Enabled() || gPlayState == nullptr) {
+        return;
+    }
+    if (!m.contains("seq") || !m["seq"].is_number_unsigned() || m["seq"].get<uint64_t>() > 0xFFFFFFFFull) {
+        Drop("inv_cancel", "missing or bad seq");
+        return;
+    }
+    const uint32_t seq = m["seq"].get<uint32_t>();
+    ClientRecord& c = sClients[from];
+    c.ackPending = true;
+    const auto it = c.applied.find(seq);
+    if (it == c.applied.end()) {
+        SPDLOG_INFO("[Coop] inv-cancel: player {} seq {}: nothing to undo (not applied)", from, seq);
+        return;
+    }
+    const std::vector<Unit>& units = Units();
+    std::vector<int64_t> values = ReadAll();
+    int kept = 0;
+    for (auto op = it->second.rbegin(); op != it->second.rend(); ++op) {
+        const Unit& u = units[op->unit];
+        int64_t& cur = values[op->unit];
+        if (u.kind == Kind::Value) {
+            if (cur == op->to) {
+                cur = op->from;
+            } else {
+                kept++;
+            }
+        } else {
+            cur = ApplyOp(u, cur, { op->unit, op->to, op->from });
+        }
+    }
+    WriteAll(values, true);
+    SPDLOG_INFO("[Coop] inv-cancel: player {} seq {} undone ({}){}", from, seq, Describe(it->second),
+                kept > 0 ? fmt::format("; {} value(s) changed since, kept", kept) : "");
+    c.applied.erase(it);
 }
 
 void HostFrame() {
@@ -515,6 +560,8 @@ struct Claim {
 std::vector<Claim> sClaims;
 std::vector<Claim> sRejectedClaims; // Recently rejected: their item is not given here
 int sDoubleGrants = 0;
+uint64_t sLastAck = 0;
+std::vector<uint32_t> sRejectedSeqs; // The last ones, for AnswerFor
 
 // The scene whose live flags can be compared now (-1: none, between scenes).
 int WorldScene() {
@@ -537,10 +584,10 @@ std::vector<int64_t> Expected() {
     return v;
 }
 
-// What changed in this game since the last look goes to the host as one event.
-void ClientCapture() {
+// What changed in this game since the last look goes to the host as one event (its seq; 0: nothing changed).
+uint32_t ClientCapture() {
     if (!sHaveAuth) {
-        return;
+        return 0;
     }
     const std::vector<Unit>& units = Units();
     const int scene = WorldScene();
@@ -568,7 +615,7 @@ void ClientCapture() {
         }
     }
     if (ops.empty()) {
-        return;
+        return 0;
     }
     const uint32_t seq = ++sNextSeq;
     nlohmann::json j = nlohmann::json::array();
@@ -587,6 +634,7 @@ void ClientCapture() {
     SPDLOG_INFO("[Coop] inv-event: seq {} sent: {}", seq, Describe(ops));
     sPending.push_back({ seq, std::move(ops) });
     sSent++;
+    return seq;
 }
 
 // The host answered up to `ack`: claims of rejected events keep their item from being given here; a claim whose item
@@ -679,6 +727,13 @@ void ClientOnInvState(uint32_t, const nlohmann::json& m) {
         SPDLOG_INFO("[Coop] inv-reject: seq {} rejected by the host: {}", seq, why);
     }
     SettleClaims(ack, rejected);
+    sLastAck = std::max(sLastAck, ack);
+    for (const auto& r : rejected) {
+        sRejectedSeqs.push_back(r.first);
+    }
+    if (sRejectedSeqs.size() > 64) {
+        sRejectedSeqs.erase(sRejectedSeqs.begin(), sRejectedSeqs.end() - 64);
+    }
     while (!sPending.empty() && sPending.front().seq <= ack) {
         sPending.pop_front();
         sAcked++;
@@ -713,6 +768,7 @@ void LogStats() {
 void RegisterInventoryHooks() {
     RegisterJsonHandler("inv_event", HostOnInvEvent);
     RegisterJsonHandler("inv_state", ClientOnInvState);
+    RegisterJsonHandler("inv_cancel", HostOnInvCancel);
     GameInteractor::Instance->RegisterGameHook<GameInteractor::ShouldItemGive>(OnShouldItemGive);
 }
 
@@ -739,6 +795,28 @@ void Frame() {
     }
     ClientCapture();
     LogStats();
+}
+
+uint32_t SendNow() {
+    if (IsHosting() || !Enabled() || !IsClientInSession()) {
+        return 0;
+    }
+    return ClientCapture();
+}
+
+Answer AnswerFor(uint32_t seq) {
+    if (std::find(sRejectedSeqs.begin(), sRejectedSeqs.end(), seq) != sRejectedSeqs.end()) {
+        return Answer::Rejected;
+    }
+    return seq <= sLastAck ? Answer::Applied : Answer::Waiting;
+}
+
+void Cancel(uint32_t seq) {
+    SendJson(kHostPlayerId, { { "type", "inv_cancel" }, { "seq", seq } });
+    sPending.erase(std::remove_if(sPending.begin(), sPending.end(), [&](const Pending& p) { return p.seq == seq; }),
+                   sPending.end());
+    sRejectedSeqs.push_back(seq);
+    SPDLOG_INFO("[Coop] inv-cancel: seq {} given up here; the host undoes it if it applied it", seq);
 }
 
 void OnEnteredSession() {
@@ -802,6 +880,8 @@ void TestFuzz() {
         send(
             kHostPlayerId, "600 ops",
             { { "type", "inv_event" }, { "seq", 100005 }, { "ops", std::vector<std::vector<int>>(600, { 0, 0, 1 }) } });
+        send(kHostPlayerId, "cancel without seq", { { "type", "inv_cancel" } });
+        send(kHostPlayerId, "cancel of an event never sent", { { "type", "inv_cancel" }, { "seq", 99999 } });
     }
 }
 

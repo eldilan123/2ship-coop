@@ -1,7 +1,9 @@
 // Client: dying in the host's world (milestone 5, provisional until milestone 8). There is no game over for a client:
 // the Link falls, and 5 s later it is back next to the host with 3 hearts and 3 s of invulnerability. Every cause of
 // death ends in the same place of Player (health 0 -> func_80831F34), which either starts the game over or, with a
-// fairy in a bottle, the fairy's revival. The revival is left as it is (the fairy is the client's copy, in memory).
+// fairy in a bottle, the fairy's revival. The bottle is shared (milestone 6): the revival waits for the host to take
+// the fairy out of the shared bottle (500 ms at most); if the host says no (it was already used) or does not answer in
+// time, the Link dies as without a fairy.
 // The game over is stopped on the frame it starts, right after the Link's update and before GameOver_Update runs:
 // nothing of it (music, letterbox, timers, saving) happens. Nothing is ever written to disk (CoopSaveGuard).
 #include "CoopClientDeath.h"
@@ -10,6 +12,7 @@
 #include <chrono>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
+#include "CoopInventory.h"
 #include "CoopSession.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -41,6 +44,12 @@ SteadyClock::time_point sInvulnerableUntil;
 bool sInvulnerable = false;
 bool sFairyLogged = false;
 bool sCheckLogged = false; // The "1 s later" line of the current death
+// The fairy's revival, held until the host takes the fairy out of the shared bottle.
+enum class FairyHold { None, Waiting, Done };
+FairyHold sFairy = FairyHold::None;
+uint32_t sFairySeq = 0;
+SteadyClock::time_point sFairySince;
+constexpr auto kFairyMaxWait = std::chrono::milliseconds(500);
 
 void StopGameOverFanfare() {
     sFanfareState = 0;
@@ -62,7 +71,21 @@ void OnPlayerUpdate(Actor* actor) {
     Player* player = reinterpret_cast<Player*>(actor);
     if (play->gameOverCtx.state == GAMEOVER_INACTIVE && !(player->stateFlags1 & PLAYER_STATE1_DEAD)) {
         sFairyLogged = false;
+        sFairy = FairyHold::None;
         return;
+    }
+    if (play->gameOverCtx.state == GAMEOVER_REVIVE_START && sFairy == FairyHold::None) {
+        // The bottle just lost its fairy: that change goes to the host now, and the revival waits for its answer.
+        sFairySeq = Inventory::SendNow();
+        if (sFairySeq != 0) {
+            sFairy = FairyHold::Waiting;
+            sFairySince = SteadyClock::now();
+            play->gameOverCtx.state = GAMEOVER_INACTIVE;
+            SPDLOG_INFO("[Coop] client-death: a fairy from the shared bottle; waiting for the host (seq {})",
+                        sFairySeq);
+            return;
+        }
+        sFairy = FairyHold::Done;
     }
     if (play->gameOverCtx.state == GAMEOVER_REVIVE_START && !sFairyLogged) {
         sFairyLogged = true;
@@ -113,12 +136,32 @@ void RegisterClientDeathHooks() {
 void Frame() {
     if (IsHosting() || !IsClientInSession()) {
         sDown = sRespawning = sInvulnerable = false;
+        sFairy = FairyHold::None;
         return;
     }
     if (!ClientPlaying()) {
         return;
     }
     const auto now = SteadyClock::now();
+    if (sFairy == FairyHold::Waiting) {
+        const Inventory::Answer answer = Inventory::AnswerFor(sFairySeq);
+        const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(now - sFairySince).count();
+        if (answer == Inventory::Answer::Applied) {
+            sFairy = FairyHold::Done;
+            gPlayState->gameOverCtx.state = GAMEOVER_REVIVE_START;
+            SPDLOG_INFO("[Coop] client-death: the host took the fairy out of the shared bottle after {} ms; revived",
+                        waited);
+        } else if (answer == Inventory::Answer::Rejected || now - sFairySince >= kFairyMaxWait) {
+            if (answer != Inventory::Answer::Rejected) {
+                Inventory::Cancel(sFairySeq);
+            }
+            sFairy = FairyHold::Done;
+            gPlayState->gameOverCtx.state = GAMEOVER_DEATH_START;
+            SPDLOG_INFO("[Coop] client-death: no fairy after all ({} after {} ms); the Link dies",
+                        answer == Inventory::Answer::Rejected ? "the host refused it, already used" : "no answer",
+                        waited);
+        }
+    }
     if (sDown) {
         StopGameOverFanfare(); // In case it got through anyway
     }

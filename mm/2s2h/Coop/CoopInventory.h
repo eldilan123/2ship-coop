@@ -35,6 +35,15 @@ void OnEnteredSession();
 void BeforeSnapshot();
 void AfterSnapshot();
 
+// Client: sends what changed this frame right away and returns that event's seq (0: nothing changed, or the shared
+// inventory is off).
+uint32_t SendNow();
+enum class Answer { Waiting, Applied, Rejected };
+// Client: the host's answer to one of this game's events.
+Answer AnswerFor(uint32_t seq);
+// Client: gives up on an event (inv_cancel): it is dropped here and the host undoes it if it had applied it.
+void Cancel(uint32_t seq);
+
 // Test only (host): sends malformed inv_event / inv_state messages.
 void TestFuzz();
 
