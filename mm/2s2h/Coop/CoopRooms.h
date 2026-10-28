@@ -20,11 +20,20 @@ extern "C" {
 // as a fallback). Moves wait for cutscenes (doors included), text, pause, scene changes and death on either side, and
 // at least gCoop.RoomMoveMinMs pass between two moves of a player.
 //
+// Phase 2: whoever crosses first leads. A client that goes through a door, a room plane or a hole reports it
+// (room_cross, once the room change is over) and the host follows it with the same light move, next to it; the host
+// answers with room_cross_done. If both crossed to different rooms within a second, the host wins and the client is
+// taken to the host's room. While the host reels from a hit or falls into the void the follow waits, up to
+// gCoop.RoomFollowMaxDeferMs. A client's fall into the void is not a cross: it comes back next to the host. Nobody is
+// put down inside a room plane's range (the plane would load a room twice): the arrival spot moves out of it.
+//
 // The live flags travel only with a move: changes the host makes to the world in between (switches, chests it opens)
 // still do not reach the client during play.
 //
 // Game thread only.
 #define CVAR_COOP_ROOM_MOVE_MIN_MS "gCoop.RoomMoveMinMs" // Minimum time between two moves of a player (2000)
+// Longest wait of a follow while the host reels from a hit or falls into the void (10000); then it follows anyway.
+#define CVAR_COOP_ROOM_FOLLOW_MAX_DEFER_MS "gCoop.RoomFollowMaxDeferMs"
 
 namespace Coop::Rooms {
 
@@ -32,11 +41,14 @@ namespace Coop::Rooms {
 void Frame();
 // Whether `room` is loaded in this game (-1, "no room", always is).
 bool RoomLoadedHere(int8_t room);
-// Client: a move is running (fade, rooms being swapped).
+// A move of the local Link is running (fade, rooms being swapped): a client's order or the host's follow.
 bool MoveInProgress();
 
 // Test only: sends malformed room messages to the other side.
 void TestFuzz();
+// Test only (host): moves the local Link to `room` at `pos` with the room move itself (to reach rooms far from a
+// scene's entrance); the clients follow as after any room change of the host.
+void TestMoveTo(int8_t room, const Vec3f& pos);
 
 } // namespace Coop::Rooms
 
