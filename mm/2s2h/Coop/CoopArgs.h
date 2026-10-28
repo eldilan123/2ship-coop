@@ -121,8 +121,10 @@ struct LaunchOptions {
     std::vector<TimedHold> testHold;
     // Both: change this game's shared state with the game's own functions (shared state tests): "item:<id>"
     // (Item_Give), "rupees:<n>" (Rupees_ChangeBy, n may be negative), "week:<hex packed flag>" (SET_WEEKEVENTREG),
-    // "switch:<flag>" (Flags_SetSwitch in the current scene). "@w<unix ms>" instead of "@<seconds>": at that wall-clock
-    // time (two games changing together)
+    // "switch:<flag>" (Flags_SetSwitch in the current scene), "chest:<hex params>" (an En_Box 150 units along +z of the
+    // Link, facing it), "drop:<hex params>" (an En_Item00 150 units along -z), "open:0" (the Link in front of the
+    // nearest chest, pressing A), "pick:0" (the Link onto the nearest collectible). "@w<unix ms>" instead of
+    // "@<seconds>": at that wall-clock time (two games changing together)
     struct TimedChange {
         std::string kind;
         int value;

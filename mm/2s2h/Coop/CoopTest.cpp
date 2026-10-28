@@ -556,8 +556,33 @@ size_t sNextHold = 0;
 
 // --coop-test-change: this game's shared state changed through the game's own functions.
 size_t sNextChange = 0;
+// "open": A presses left for the chest (one, then more for the get-item text)
+int sOpenPresses = 0;
+SteadyClock::time_point sOpenNext = {};
+
+// One A for the Link (opening the chest), then for up to 15 s an A every second while a text is open: the get-item
+// text comes after the chest's animation and reads the controller itself (Message_ShouldAdvance), not the Link's
+// input.
+void UpdateOpenPresses() {
+    const auto now = SteadyClock::now();
+    if (sOpenPresses == 0 || now < sOpenNext || sHeldButtons != 0) {
+        return;
+    }
+    sOpenNext = now + std::chrono::milliseconds(1000);
+    sOpenPresses--;
+    if (sOpenPresses == 14) {
+        sHeldButtons = BTN_A;
+        sPressEdge = true;
+        sHeldUntil = now + std::chrono::milliseconds(100);
+    } else if (gPlayState->msgCtx.msgMode != MSGMODE_NONE) {
+        Input* input = CONTROLLER1(&gPlayState->state);
+        input->cur.button |= BTN_A;
+        input->press.button |= BTN_A;
+    }
+}
 
 void UpdateChanges() {
+    UpdateOpenPresses();
     const auto& changes = GetLaunchOptions().testChange;
     if (sNextChange >= changes.size() || !NoTransitionInProgress()) {
         return;
@@ -578,6 +603,47 @@ void UpdateChanges() {
         SET_WEEKEVENTREG(c.value);
     } else if (c.kind == "switch") {
         Flags_SetSwitch(gPlayState, c.value);
+    } else if (c.kind == "chest" || c.kind == "drop") {
+        Player* link = GET_PLAYER(gPlayState);
+        const float dz = c.kind == "chest" ? 150.0f : -150.0f;
+        const Vec3f at = { link->actor.world.pos.x, link->actor.world.pos.y, link->actor.world.pos.z + dz };
+        const Actor* a = Enemies::TestSpawnAt(c.kind == "chest" ? ACTOR_EN_BOX : ACTOR_EN_ITEM00, at,
+                                              static_cast<s16>(0x8000), static_cast<uint16_t>(c.value));
+        SPDLOG_INFO("[Coop] TEST: {} {} params 0x{:04X} at ({:.0f}, {:.0f}, {:.0f})",
+                    a != nullptr ? "spawned" : "could not spawn", c.kind == "chest" ? "En_Box" : "En_Item00", c.value,
+                    at.x, at.y, at.z);
+    } else if (c.kind == "open" || c.kind == "pick") {
+        const s16 id = c.kind == "open" ? ACTOR_EN_BOX : ACTOR_EN_ITEM00;
+        Player* link = GET_PLAYER(gPlayState);
+        Actor* nearest = nullptr;
+        for (int category = 0; category < ACTORCAT_MAX; category++) {
+            for (Actor* a = gPlayState->actorCtx.actorLists[category].first; a != nullptr; a = a->next) {
+                // Chests already opened (their treasure flag, params & 0x1F) do not count.
+                if (a->id == id && a->update != nullptr &&
+                    !(id == ACTOR_EN_BOX && Flags_GetTreasure(gPlayState, a->params & 0x1F)) &&
+                    (nearest == nullptr ||
+                     Actor_WorldDistXZToActor(&link->actor, a) < Actor_WorldDistXZToActor(&link->actor, nearest))) {
+                    nearest = a;
+                }
+            }
+        }
+        SPDLOG_INFO("[Coop] TEST: change {}: {} params 0x{:04X}; Link state1 0x{:08X} state2 0x{:08X}, message mode {}",
+                    c.kind, nearest != nullptr ? "nearest" : "nothing to take, no actor", nearest ? nearest->params : 0,
+                    link->stateFlags1, link->stateFlags2, gPlayState->msgCtx.msgMode);
+        if (nearest != nullptr) {
+            // A chest opens for a Link 0-50 units behind its facing (EnBox_WaitOpen), turned towards it; a collectible
+            // is picked up by touching it.
+            const s16 yaw = nearest->shape.rot.y;
+            const float d = c.kind == "open" ? -30.0f : 0.0f;
+            const Vec3f pos = { nearest->world.pos.x + d * Math_SinS(yaw), nearest->world.pos.y,
+                                nearest->world.pos.z + d * Math_CosS(yaw) };
+            link->actor.world.pos = link->actor.prevPos = link->actor.home.pos = pos;
+            link->actor.shape.rot.y = link->actor.world.rot.y = link->yaw = yaw;
+            if (c.kind == "open") {
+                sOpenPresses = 15;
+                sOpenNext = SteadyClock::now() + std::chrono::milliseconds(150);
+            }
+        }
     }
     SPDLOG_INFO("[Coop] TEST: change {} 0x{:X} (rupees {}, accumulator {})", c.kind, c.value,
                 gSaveContext.save.saveInfo.playerData.rupees, gSaveContext.rupeeAccumulator);

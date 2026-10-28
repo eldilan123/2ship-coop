@@ -1932,6 +1932,13 @@ void TestSpawn(int16_t actorId, uint16_t params, int index) {
                 pos.y, pos.z);
 }
 
+Actor* TestSpawnAt(int16_t actorId, const Vec3f& pos, s16 yaw, uint16_t params) {
+    if (!InGameplay() || gActorOverlayTable[actorId].profile == nullptr) {
+        return nullptr;
+    }
+    return SpawnUnchecked(actorId, pos, { 0, yaw, 0 }, params, 0);
+}
+
 void TestSweepStep(int step, int total, int16_t actorId, uint16_t params) {
     if (!IsHosting() || !InGameplay()) {
         return;

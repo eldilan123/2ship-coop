@@ -11,6 +11,7 @@
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopSession.h"
+#include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
 extern "C" {
@@ -18,6 +19,7 @@ extern "C" {
 #include "macros.h"
 #include "functions.h"
 #include "variables.h"
+#include "overlays/actors/ovl_En_Box/z_en_box.h"
 }
 
 namespace Coop::Inventory {
@@ -29,7 +31,7 @@ using SteadyClock = std::chrono::steady_clock;
 constexpr int64_t kStatsEveryMs = 10000;
 constexpr size_t kMaxOps = 512;
 
-enum class Kind { Value, Counter, Bits };
+enum class Kind { Value, Counter, Bits, Claim };
 
 const char* KindName(Kind k) {
     switch (k) {
@@ -39,6 +41,8 @@ const char* KindName(Kind k) {
             return "counter";
         case Kind::Bits:
             return "bits";
+        case Kind::Claim:
+            return "claim";
     }
     return "?";
 }
@@ -53,6 +57,10 @@ struct Unit {
     void (*set)(int index, int64_t value);
     int index;
     int itemSlot; // >= 0: an item slot (equipped buttons follow it)
+    // The live flags of the current scene: only compared and written while both games are in the same scene.
+    bool world = false;
+    // A counter whose top depends on the save (rupees: the wallet), like the game itself keeps it.
+    int64_t (*cap)() = nullptr;
 };
 
 ::Inventory& Inv() {
@@ -79,12 +87,13 @@ const std::vector<Unit>& Units() {
         }
         // Rupees still in the accumulator count: Interface_Update moves them a few per frame, and never below 0 or
         // past the wallet.
-        u.push_back(
-            { "rupees", Kind::Counter, 0, 999,
-              [](int) -> int64_t {
-                  return std::clamp<int64_t>(Pd().rupees + gSaveContext.rupeeAccumulator, 0, CUR_CAPACITY(UPG_WALLET));
-              },
-              [](int, int64_t v) { Pd().rupees = static_cast<s16>(v - gSaveContext.rupeeAccumulator); }, 0, -1 });
+        u.push_back({ "rupees", Kind::Counter, 0, 999,
+                      [](int) -> int64_t {
+                          return std::clamp<int64_t>(Pd().rupees + gSaveContext.rupeeAccumulator, 0,
+                                                     CUR_CAPACITY(UPG_WALLET));
+                      },
+                      [](int, int64_t v) { Pd().rupees = static_cast<s16>(v - gSaveContext.rupeeAccumulator); }, 0, -1,
+                      false, []() -> int64_t { return CUR_CAPACITY(UPG_WALLET); } });
         u.push_back({ "bank rupees", Kind::Counter, 0, 0xFFFF, [](int) -> int64_t { return HS_GET_BANK_RUPEES(); },
                       [](int, int64_t v) { HS_SET_BANK_RUPEES(static_cast<u32>(v)); }, 0, -1 });
         u.push_back({ "equipment", Kind::Value, 0, 0xFFFF,
@@ -140,6 +149,29 @@ const std::vector<Unit>& Units() {
         u.push_back({ "stolenItems", Kind::Value, 0, 0xFFFFFFFFll,
                       [](int) -> int64_t { return gSaveContext.save.saveInfo.stolenItems; },
                       [](int, int64_t v) { gSaveContext.save.saveInfo.stolenItems = static_cast<u32>(v); }, 0, -1 });
+        // Claims: what a chest or a collectible gave. A bit set by one game that the host already has set is the
+        // second one taking the same thing: its whole event (the item or rupees with it) is rejected.
+        u.push_back({ "live chest flags", Kind::Claim, 0, 0xFFFFFFFFll,
+                      [](int) -> int64_t { return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.chest : 0; },
+                      [](int, int64_t v) {
+                          if (gPlayState != nullptr) {
+                              gPlayState->actorCtx.sceneFlags.chest = static_cast<u32>(v);
+                          }
+                      },
+                      0, -1, true });
+        for (int i = 0; i < ARRAY_COUNT(gPlayState->actorCtx.sceneFlags.collectible); i++) {
+            u.push_back({ fmt::format("live collectible flags 0x{:02X}-0x{:02X}", i * 32, i * 32 + 31), Kind::Claim, 0,
+                          0xFFFFFFFFll,
+                          [](int k) -> int64_t {
+                              return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.collectible[k] : 0;
+                          },
+                          [](int k, int64_t v) {
+                              if (gPlayState != nullptr) {
+                                  gPlayState->actorCtx.sceneFlags.collectible[k] = static_cast<u32>(v);
+                              }
+                          },
+                          i, -1, true });
+        }
         return u;
     }();
     return sUnits;
@@ -166,8 +198,9 @@ int64_t ApplyOp(const Unit& u, int64_t cur, const Op& op) {
         case Kind::Value:
             return op.to;
         case Kind::Counter:
-            return std::clamp<int64_t>(cur + (op.to - op.from), u.min, u.max);
-        case Kind::Bits: {
+            return std::clamp<int64_t>(cur + (op.to - op.from), u.min, u.cap != nullptr ? u.cap() : u.max);
+        case Kind::Bits:
+        case Kind::Claim: {
             const int64_t set = op.to & ~op.from;
             const int64_t clear = op.from & ~op.to;
             return (cur | set) & ~clear;
@@ -250,16 +283,40 @@ void RefreshSwordButton() {
     }
 }
 
-// Writes `values` into the save where they differ, then refreshes this player's buttons.
-void WriteAll(const std::vector<int64_t>& values) {
+// A collectible taken by the other game: this game's copy of it goes too (En_Item00 only checks its flag at Init).
+void KillCollectibles(int word, u32 bits) {
+    if (gPlayState == nullptr || bits == 0) {
+        return;
+    }
+    for (int category = 0; category < ACTORCAT_MAX; category++) {
+        for (Actor* a = gPlayState->actorCtx.actorLists[category].first; a != nullptr; a = a->next) {
+            if (a->id != ACTOR_EN_ITEM00 || a->update == nullptr) {
+                continue;
+            }
+            const s16 flag = reinterpret_cast<EnItem00*>(a)->collectibleFlag;
+            if (flag > 0 && (flag >> 5) == word && (bits & (1u << (flag & 0x1F)))) {
+                SPDLOG_INFO("[Coop] inv: collectible flag 0x{:02X} taken by the other player; its item goes here too",
+                            flag);
+                Actor_Kill(a);
+            }
+        }
+    }
+}
+
+// Writes `values` into the save where they differ (the live scene flags only with `withWorld`), then refreshes this
+// player's buttons and removes the collectibles the other game took.
+void WriteAll(const std::vector<int64_t>& values, bool withWorld) {
     const std::vector<Unit>& units = Units();
     const std::vector<int64_t> live = ReadAll();
     bool swordChanged = false;
     for (size_t i = 0; i < units.size(); i++) {
-        if (live[i] == values[i]) {
+        if (live[i] == values[i] || (units[i].world && !withWorld)) {
             continue;
         }
         units[i].set(units[i].index, values[i]);
+        if (units[i].world && units[i].name.rfind("live collectible", 0) == 0) {
+            KillCollectibles(units[i].index, static_cast<u32>(values[i] & ~live[i]));
+        }
         if (units[i].itemSlot >= 0) {
             RefreshButtonsForSlot(units[i].itemSlot);
         }
@@ -345,14 +402,31 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
     const uint32_t seq = static_cast<uint32_t>(seq64);
     c.lastSeq = seq;
     c.ackPending = true;
-    // All or nothing: check every op against the host's values, then write.
     const std::vector<Unit>& units = Units();
+    // The live scene flags only count in the scene the host is in (the client sends the one it took them in).
+    const bool sameScene =
+        m.contains("scene") && m["scene"].is_number_integer() && m["scene"].get<int64_t>() == gPlayState->sceneId;
+    if (!sameScene) {
+        const size_t before = ops.size();
+        ops.erase(std::remove_if(ops.begin(), ops.end(), [&](const Op& op) { return units[op.unit].world; }),
+                  ops.end());
+        if (ops.size() != before) {
+            SPDLOG_INFO("[Coop] inv: player {} seq {}: {} live scene flag change(s) from another scene left out", from,
+                        seq, before - ops.size());
+        }
+    }
+    // All or nothing: check every op against the host's values, then write.
     std::vector<int64_t> values = ReadAll();
     std::string reject;
     std::vector<std::string> overdraws;
     for (const Op& op : ops) {
         const Unit& u = units[op.unit];
         const int64_t cur = values[op.unit];
+        if (u.kind == Kind::Claim && (cur & op.to & ~op.from) != 0) {
+            reject = fmt::format("{} 0x{:X} already set on the host (the other player took it first)", u.name,
+                                 cur & op.to & ~op.from);
+            break;
+        }
         if (u.kind == Kind::Value && cur != op.from) {
             reject = fmt::format("{} is 0x{:X} on the host, not 0x{:X} (another change got there first)", u.name, cur,
                                  op.from);
@@ -364,9 +438,10 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
                 reject = fmt::format("rupees: the host has {}, not enough for {}", cur, op.to - op.from);
                 break;
             }
-            if (result < u.min || result > u.max) {
+            const int64_t top = u.cap != nullptr ? u.cap() : u.max;
+            if (result < u.min || result > top) {
                 overdraws.push_back(fmt::format("{} {} {:+} -> {}", u.name, cur, op.to - op.from,
-                                                std::clamp<int64_t>(result, u.min, u.max)));
+                                                std::clamp<int64_t>(result, u.min, top)));
             }
         }
         values[op.unit] = ApplyOp(u, cur, op);
@@ -377,7 +452,7 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
         SPDLOG_INFO("[Coop] inv-reject: player {} seq {} ({}): {}", from, seq, Describe(ops), reject);
         return;
     }
-    WriteAll(values);
+    WriteAll(values, true);
     sApplied++;
     for (const std::string& o : overdraws) {
         sOverdraws++;
@@ -401,7 +476,11 @@ void HostFrame() {
         for (const auto& [seq, why] : c.rejected) {
             rejected.push_back({ seq, why });
         }
-        SendJson(p.id, { { "type", "inv_state" }, { "ack", c.lastSeq }, { "rejected", rejected }, { "v", values } });
+        SendJson(p.id, { { "type", "inv_state" },
+                         { "ack", c.lastSeq },
+                         { "rejected", rejected },
+                         { "scene", gPlayState->sceneId },
+                         { "v", values } });
         c.ackPending = false;
         c.rejected.clear();
         sStatesSent++;
@@ -423,6 +502,29 @@ int sSent = 0;
 int sAcked = 0;
 int sRejectedHere = 0;
 std::vector<int64_t> sKept; // Around a snapshot
+int sAuthScene = -1;        // Scene of the live flags in sAuth
+
+// A chest or collectible flag this game set and sent as a claim, until the host answers.
+struct Claim {
+    uint32_t seq;
+    bool chest;
+    int flag;
+    int64_t atMs;
+    bool givenWhileWaiting; // The game gave its item before the host answered
+};
+std::vector<Claim> sClaims;
+std::vector<Claim> sRejectedClaims; // Recently rejected: their item is not given here
+int sDoubleGrants = 0;
+
+// The scene whose live flags can be compared now (-1: none, between scenes).
+int WorldScene() {
+    PlayState* play = gPlayState;
+    if (play == nullptr || gSaveContext.gameMode != GAMEMODE_NORMAL || play->transitionTrigger != TRANS_TRIGGER_OFF ||
+        play->transitionMode != TRANS_MODE_OFF) {
+        return -1;
+    }
+    return play->sceneId;
+}
 
 std::vector<int64_t> Expected() {
     const std::vector<Unit>& units = Units();
@@ -440,11 +542,28 @@ void ClientCapture() {
     if (!sHaveAuth) {
         return;
     }
+    const std::vector<Unit>& units = Units();
+    const int scene = WorldScene();
+    if (scene >= 0 && scene != sAuthScene) {
+        // A new scene: its live flags were loaded from the shared cycle flags, so they start equal to the host's.
+        for (Pending& p : sPending) {
+            p.ops.erase(std::remove_if(p.ops.begin(), p.ops.end(), [&](const Op& op) { return units[op.unit].world; }),
+                        p.ops.end());
+        }
+        const std::vector<int64_t> live = ReadAll();
+        for (size_t i = 0; i < units.size(); i++) {
+            if (units[i].world) {
+                sAuth[i] = live[i];
+            }
+        }
+        sAuthScene = scene;
+    }
+    const bool worldOk = scene >= 0 && scene == sAuthScene;
     const std::vector<int64_t> expected = Expected();
     const std::vector<int64_t> live = ReadAll();
     std::vector<Op> ops;
     for (size_t i = 0; i < live.size(); i++) {
-        if (live[i] != expected[i]) {
+        if (live[i] != expected[i] && (worldOk || !units[i].world)) {
             ops.push_back({ i, expected[i], live[i] });
         }
     }
@@ -455,11 +574,74 @@ void ClientCapture() {
     nlohmann::json j = nlohmann::json::array();
     for (const Op& op : ops) {
         j.push_back({ op.unit, op.from, op.to });
+        const Unit& u = units[op.unit];
+        const u32 claimed = static_cast<u32>(op.to & ~op.from);
+        for (int bit = 0; u.kind == Kind::Claim && bit < 32; bit++) {
+            if (claimed & (1u << bit)) {
+                const bool chest = u.name == "live chest flags";
+                sClaims.push_back({ seq, chest, chest ? bit : u.index * 32 + bit, NowMs(), false });
+            }
+        }
     }
-    SendJson(kHostPlayerId, { { "type", "inv_event" }, { "seq", seq }, { "ops", j } });
+    SendJson(kHostPlayerId, { { "type", "inv_event" }, { "seq", seq }, { "scene", sAuthScene }, { "ops", j } });
     SPDLOG_INFO("[Coop] inv-event: seq {} sent: {}", seq, Describe(ops));
     sPending.push_back({ seq, std::move(ops) });
     sSent++;
+}
+
+// The host answered up to `ack`: claims of rejected events keep their item from being given here; a claim whose item
+// was already given before the rejection is a double grant.
+void SettleClaims(uint64_t ack, const std::vector<std::pair<uint32_t, std::string>>& rejected) {
+    const int64_t now = NowMs();
+    for (auto it = sClaims.begin(); it != sClaims.end();) {
+        if (it->seq > ack) {
+            ++it;
+            continue;
+        }
+        const bool wasRejected =
+            std::any_of(rejected.begin(), rejected.end(), [&](const auto& r) { return r.first == it->seq; });
+        if (wasRejected) {
+            if (it->givenWhileWaiting) {
+                sDoubleGrants++;
+                SPDLOG_WARN("[Coop] double-grant: {} flag 0x{:02X} was taken by the other player first, but this game "
+                            "had already given its item",
+                            it->chest ? "chest" : "collectible", it->flag);
+            }
+            sRejectedClaims.push_back({ it->seq, it->chest, it->flag, now, false });
+        }
+        it = sClaims.erase(it);
+    }
+    sRejectedClaims.erase(std::remove_if(sRejectedClaims.begin(), sRejectedClaims.end(),
+                                         [&](const Claim& c) { return now - c.atMs > 10000; }),
+                          sRejectedClaims.end());
+}
+
+// The game is about to give an item: if it comes from a chest or collectible the other player took first, it is not
+// given again here (it went to the shared pool once, with the other player).
+void OnShouldItemGive(u8 item, bool* should) {
+    if (IsHosting() || !sHaveAuth || gPlayState == nullptr || !*should) {
+        return;
+    }
+    const Actor* source = GET_PLAYER(gPlayState)->interactRangeActor;
+    if (source == nullptr || (source->id != ACTOR_EN_BOX && source->id != ACTOR_EN_ITEM00)) {
+        return;
+    }
+    const bool chest = source->id == ACTOR_EN_BOX;
+    const int flag = chest ? ENBOX_GET_CHEST_FLAG(source) : reinterpret_cast<const EnItem00*>(source)->collectibleFlag;
+    for (const Claim& c : sRejectedClaims) {
+        if (c.chest == chest && c.flag == flag) {
+            *should = false;
+            SPDLOG_INFO("[Coop] inv: {} flag 0x{:02X} was taken by the other player first; item 0x{:02X} is not given "
+                        "here",
+                        chest ? "chest" : "collectible", flag, item);
+            return;
+        }
+    }
+    for (Claim& c : sClaims) {
+        if (c.chest == chest && c.flag == flag) {
+            c.givenWhileWaiting = true;
+        }
+    }
 }
 
 void ClientOnInvState(uint32_t, const nlohmann::json& m) {
@@ -496,12 +678,20 @@ void ClientOnInvState(uint32_t, const nlohmann::json& m) {
         sRejectedHere++;
         SPDLOG_INFO("[Coop] inv-reject: seq {} rejected by the host: {}", seq, why);
     }
+    SettleClaims(ack, rejected);
     while (!sPending.empty() && sPending.front().seq <= ack) {
         sPending.pop_front();
         sAcked++;
     }
-    sAuth = values;
-    WriteAll(Expected());
+    // The host's live scene flags only count while both are in that scene.
+    const bool sameScene = m.contains("scene") && m["scene"].is_number_integer() &&
+                           m["scene"].get<int64_t>() == sAuthScene && WorldScene() == sAuthScene;
+    for (size_t i = 0; i < units.size(); i++) {
+        if (!units[i].world || sameScene) {
+            sAuth[i] = values[i];
+        }
+    }
+    WriteAll(Expected(), sameScene);
 }
 
 void LogStats() {
@@ -515,14 +705,15 @@ void LogStats() {
         SPDLOG_INFO("[Coop] inv-stats (host): events applied {}, rejected {}, overdraws {}; states sent {}", sApplied,
                     sRejected, sOverdraws, sStatesSent);
     } else {
-        SPDLOG_INFO("[Coop] inv-stats: events sent {}, confirmed {}, rejected {}, waiting {}", sSent, sAcked,
-                    sRejectedHere, sPending.size());
+        SPDLOG_INFO("[Coop] inv-stats: events sent {}, confirmed {}, rejected {}, waiting {}, double-grant {}", sSent,
+                    sAcked, sRejectedHere, sPending.size(), sDoubleGrants);
     }
 }
 
 void RegisterInventoryHooks() {
     RegisterJsonHandler("inv_event", HostOnInvEvent);
     RegisterJsonHandler("inv_state", ClientOnInvState);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::ShouldItemGive>(OnShouldItemGive);
 }
 
 } // namespace
@@ -553,6 +744,9 @@ void Frame() {
 void OnEnteredSession() {
     sAuth = ReadAll();
     sPending.clear();
+    sClaims.clear();
+    sRejectedClaims.clear();
+    sAuthScene = -1;
     sHaveAuth = Enabled();
     SPDLOG_INFO("[Coop] inv: the host's inventory is the shared pool ({} units)", sAuth.size());
 }
@@ -568,7 +762,7 @@ void BeforeSnapshot() {
 
 void AfterSnapshot() {
     if (sHaveAuth && sKept.size() == Units().size()) {
-        WriteAll(sKept);
+        WriteAll(sKept, false);
     }
     sKept.clear();
 }
