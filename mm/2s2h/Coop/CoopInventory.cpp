@@ -719,7 +719,13 @@ uint32_t ClientCapture() {
     std::vector<Op> ops;
     for (size_t i = 0; i < live.size(); i++) {
         if (live[i] != expected[i] && (worldOk || !units[i].world) && (!units[i].story || Story::FromClient())) {
-            ops.push_back({ i, expected[i], live[i] });
+            // The host-only story bits (the alien defense's result) never go out from the client.
+            const int64_t hostOnly =
+                units[i].name.rfind("weekEventReg[", 0) == 0 ? Story::HostOnlyWeekEventBits(units[i].index) : 0;
+            const int64_t to = (live[i] & ~hostOnly) | (expected[i] & hostOnly);
+            if (to != expected[i]) {
+                ops.push_back({ i, expected[i], to });
+            }
         }
     }
     if (ops.empty()) {

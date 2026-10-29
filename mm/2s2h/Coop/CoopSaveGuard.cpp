@@ -12,6 +12,8 @@ namespace {
 std::atomic<bool> sClientInSession = false;
 // Saves are written from the game thread and from the save thread: both read these.
 std::atomic<bool> sConnectedClient = false;
+// Entered the session at least once on this connection: what the game writes at boot, before that, is its own.
+std::atomic<bool> sEnteredOnce = false;
 std::atomic<int> sWritesWhileClient = 0;
 // Test only: blocks the host's own writes while a --coop-test-* action emulates a save point.
 const char* sTestSuppression = nullptr;
@@ -35,6 +37,9 @@ void SetClientInSession(bool inSession, const char* why) {
     if (sClientInSession.exchange(inSession) == inSession) {
         return;
     }
+    if (inSession) {
+        sEnteredOnce.store(true);
+    }
     SPDLOG_INFO("[Coop] Client session flag {} ({}); saving to disk is {}", inSession ? "ON" : "OFF", why,
                 inSession ? "blocked" : "allowed again");
     UpdateSaveVanillaBehaviors();
@@ -46,6 +51,9 @@ void SetTestSaveSuppression(const char* why) {
 
 void SetConnectedClient(bool connected) {
     sConnectedClient.store(connected);
+    if (!connected) {
+        sEnteredOnce.store(false);
+    }
 }
 
 int SaveWritesWhileClient() {
@@ -64,7 +72,7 @@ extern "C" bool Coop_BlocksSave(const char* reason) {
         return true;
     }
     if (!Coop::sClientInSession.load()) {
-        if (Coop::sConnectedClient.load()) {
+        if (Coop::sConnectedClient.load() && Coop::sEnteredOnce.load()) {
             const int n = ++Coop::sWritesWhileClient;
             SPDLOG_WARN("[Coop] b-save-write: {} while connected to a host as a client ({} so far)", reason, n);
         }

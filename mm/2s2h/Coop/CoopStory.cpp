@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
+#include "CoopRooms.h"
 #include "CoopSession.h"
 #include "2s2h/BenGui/Notification.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
@@ -43,6 +44,17 @@ constexpr LocalBit kLocalBits[] = {
     { WEEKEVENTREG_90_20, "90_20", "in the jumping game (En_Jgame_Tsn): the interface limits the buttons" },
 };
 
+// The result of the alien defense: decided by the host's invasion only (the client's is not run).
+constexpr u16 kHostOnlyBits[] = { WEEKEVENTREG_DEFENDED_AGAINST_ALIENS, WEEKEVENTREG_FAILED_TO_DEFEND_AGAINST_ALIENS };
+
+// En_Invadepoh types that make up the invasion (handler, aliens, UFO, abductor): not run on the client.
+bool IsInvasionPart(const Actor* a) {
+    if (a->id != ACTOR_EN_INVADEPOH) {
+        return false;
+    }
+    const int type = (a->params >> 4) & 0xF; // EN_INVADEPOH_GET_TYPE
+    return type == 0 || type == 1 || type == 6 || type == 13;
+}
 // NPCs whose state only one game can run: the client cannot talk to them yet (priority of milestone 7).
 struct Blocked {
     s16 id;
@@ -64,6 +76,9 @@ constexpr Blocked kBlocked[] = {
 };
 
 int sCutscenesFromClient = 0;
+int sStuck = 0;
+SteadyClock::time_point sFrozenSince = {};
+bool sFrozen = false;
 int sBlocked = 0;
 int sHostOnly = 0;
 SteadyClock::time_point sBusyUntil = {};
@@ -146,6 +161,46 @@ void ClientFrame() {
     }
 }
 
+// Stuck detector (milestone 7): the Link frozen (cutscene wait, PLAYER_STATE1_20000000 / 200 or a csAction) for 15 s
+// while nothing that freezes it is going on: no cutscene, text, pause, transition, room move, held exit or death. The
+// client then goes back next to the host (gCoop.StuckRecover); the host only logs it.
+void CheckStuck() {
+    PlayState* play = gPlayState;
+    Player* link = GET_PLAYER(play);
+    if (link == nullptr) {
+        return;
+    }
+    const bool frozen = (link->stateFlags1 & (PLAYER_STATE1_20000000 | PLAYER_STATE1_200)) != 0 ||
+                        link->csAction != PLAYER_CSACTION_NONE;
+    const bool explained = play->msgCtx.msgMode != MSGMODE_NONE || CutsceneManager_GetCurrentCsId() != CS_ID_NONE ||
+                           play->csCtx.state != CS_STATE_IDLE || IS_PAUSED(&play->pauseCtx) ||
+                           play->transitionTrigger != TRANS_TRIGGER_OFF || play->transitionMode != TRANS_MODE_OFF ||
+                           (link->stateFlags1 & PLAYER_STATE1_DEAD) || Rooms::MoveInProgress() ||
+                           (!IsHosting() && HoldingExit());
+    const auto now = SteadyClock::now();
+    if (!frozen || explained) {
+        sFrozen = false;
+        return;
+    }
+    if (!sFrozen) {
+        sFrozen = true;
+        sFrozenSince = now;
+        return;
+    }
+    if (now - sFrozenSince < std::chrono::seconds(15)) {
+        return;
+    }
+    sFrozen = false;
+    sStuck++;
+    SPDLOG_WARN("[Coop] stuck-recover: the Link is frozen with nothing going on (state1 0x{:08X}, csAction {}){}",
+                link->stateFlags1, link->csAction,
+                IsHosting() ? "; the host does nothing about it" : "; going back next to the host");
+    if (!IsHosting() && CVarGetInteger(CVAR_COOP_STUCK_RECOVER, 1) != 0) {
+        Notify("Coop: tu Link quedo trabado; volviendo junto al host");
+        ClientReturnToHost("the Link was stuck");
+    }
+}
+
 void LogStats() {
     static SteadyClock::time_point sNext = {};
     const auto now = SteadyClock::now();
@@ -153,19 +208,32 @@ void LogStats() {
         return;
     }
     sNext = now + std::chrono::seconds(10);
-    SPDLOG_INFO("[Coop] story-stats: cutscene-from-b {}, story-blocked {}, story-host-only {}", sCutscenesFromClient,
-                sBlocked, sHostOnly);
+    SPDLOG_INFO("[Coop] story-stats: cutscene-from-b {}, story-blocked {}, story-host-only {}, stuck-recover {}",
+                sCutscenesFromClient, sBlocked, sHostOnly, sStuck);
 }
 
 void OnFrame() {
     if (ClientPlaying()) {
         ClientFrame();
+        CheckStuck();
         LogStats();
+    } else if (IsHosting() && gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL) {
+        CheckStuck();
+    }
+}
+
+void OnActorInit(Actor* a) {
+    if (ClientPlaying() && IsInvasionPart(a)) {
+        SPDLOG_INFO(
+            "[Coop] aliens: En_Invadepoh params 0x{:04X} removed on the client; the host runs the alien defense",
+            static_cast<u16>(a->params));
+        Actor_Kill(a);
     }
 }
 
 void RegisterStoryHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameStateMainStart>(OnFrame);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnActorInit>(OnActorInit);
     // A cutscene the client starts runs on the client; the flags and items it writes reach the host.
     REGISTER_VB_SHOULD(VB_START_CUTSCENE, {
         if (!ClientPlaying() || !*should) {
@@ -201,6 +269,16 @@ uint8_t LocalWeekEventBits(int index) {
     for (const LocalBit& b : kLocalBits) {
         if ((b.flag >> 8) == index) {
             mask |= static_cast<uint8_t>(b.flag & 0xFF);
+        }
+    }
+    return mask;
+}
+
+uint8_t HostOnlyWeekEventBits(int index) {
+    uint8_t mask = 0;
+    for (u16 flag : kHostOnlyBits) {
+        if ((flag >> 8) == index) {
+            mask |= static_cast<uint8_t>(flag & 0xFF);
         }
     }
     return mask;

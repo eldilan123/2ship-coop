@@ -62,11 +62,14 @@ bool sFollowInProgress = false; // Our own transition to the host's scene; never
 // Exit the client walked into, waiting for the host to take it (scene change part 2).
 using SteadyClock = std::chrono::steady_clock;
 constexpr auto kExitRequestTimeout = std::chrono::seconds(3);
+// Once the host answers "wait" (it is in a text box, a cutscene or the pause menu) the exit waits this long at most.
+constexpr auto kExitWaitMax = std::chrono::seconds(20);
 struct HeldExit {
     bool active;
     uint16_t entrance;
     uint16_t nextCutsceneIndex;
     SteadyClock::time_point since;
+    bool waiting = false; // The host said it takes it as soon as it can
 };
 HeldExit sHeldExit = {};
 
@@ -340,7 +343,7 @@ void ClientInterceptExit() {
         if (gPlayState->transitionTrigger == TRANS_TRIGGER_START && gPlayState->transitionMode == TRANS_MODE_OFF) {
             gPlayState->transitionTrigger = TRANS_TRIGGER_OFF;
         }
-        if (SteadyClock::now() - sHeldExit.since > kExitRequestTimeout) {
+        if (SteadyClock::now() - sHeldExit.since > (sHeldExit.waiting ? kExitWaitMax : kExitRequestTimeout)) {
             sHeldExit.active = false;
             SPDLOG_WARN("[Coop] The host did not take the exit to entrance 0x{:04X}; going back to the host's scene",
                         sHeldExit.entrance);
@@ -366,7 +369,7 @@ void ClientInterceptExit() {
         return;
     }
     gPlayState->transitionTrigger = TRANS_TRIGGER_OFF;
-    sHeldExit = { true, entrance, gSaveContext.nextCutsceneIndex, SteadyClock::now() };
+    sHeldExit = { true, entrance, gSaveContext.nextCutsceneIndex, SteadyClock::now(), false };
     SendJson(kHostPlayerId,
              { { "type", "scene_request" }, { "entrance", entrance }, { "cutscene", gSaveContext.nextCutsceneIndex } });
     SPDLOG_INFO("[Coop] Exit to entrance 0x{:04X} (scene {}) held; asking the host to take it", entrance,
@@ -374,6 +377,10 @@ void ClientInterceptExit() {
 }
 
 } // namespace
+
+bool HoldingExit() {
+    return sHeldExit.active;
+}
 
 void ClientReturnToHost(const char* why) {
     SPDLOG_INFO("[Coop] Going back next to the host ({})", why);
@@ -388,36 +395,109 @@ void ClientReturnToHost(const char* why) {
 
 namespace {
 
-// Host side of part 2: take the exit a client asked for, if the host can change scenes right now.
-void HostOnSceneRequest(uint32_t from, const nlohmann::json& message) {
-    const int64_t entrance = Protocol::GetInt(message, "entrance", -1);
-    const int64_t cutscene = Protocol::GetInt(message, "cutscene", 0xFFEF);
-    const char* refusal = nullptr;
-    if (entrance < 0 || entrance > 0xFFFF || !IsValidEntrance(static_cast<uint16_t>(entrance)) || cutscene < 0 ||
-        cutscene > 0xFFFF) {
-        refusal = "invalid entrance";
-    } else if (!InGameplay() || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
-               gPlayState->transitionMode != TRANS_MODE_OFF) {
-        refusal = "the host is changing scenes";
-    } else if (gPlayState->msgCtx.msgMode != MSGMODE_NONE || Play_InCsMode(gPlayState)) {
-        refusal = "the host is in a text box or cutscene";
-    } else if (GetLaunchOptions().testHostRefuseExits) {
-        refusal = "--coop-test-host-refuse-exits";
+// Host side of part 2: take the exit a client asked for. While the host cannot change scenes (a text box, a cutscene,
+// the pause menu) the request waits, up to kExitWaitMax, and the client is told so (scene_wait); an invalid one, or one
+// that waited too long, is refused (scene_denied) so the client goes back next to the host right away.
+struct QueuedExit {
+    bool active = false;
+    uint32_t from = 0;
+    uint16_t entrance = 0;
+    uint16_t cutscene = 0;
+    SteadyClock::time_point since;
+};
+QueuedExit sQueuedExit;
+
+const char* HostExitBusy() {
+    if (!InGameplay() || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF ||
+        gPlayState->transitionMode != TRANS_MODE_OFF) {
+        return "the host is changing scenes";
     }
-    if (refusal != nullptr) {
-        SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; not now ({})", from,
-                    static_cast<uint16_t>(entrance), refusal);
-        return;
+    if (gPlayState->msgCtx.msgMode != MSGMODE_NONE || Play_InCsMode(gPlayState)) {
+        return "the host is in a text box or cutscene";
     }
-    SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; the host takes the exit", from,
-                static_cast<uint16_t>(entrance));
-    gPlayState->nextEntrance = static_cast<uint16_t>(entrance);
-    gSaveContext.nextCutsceneIndex = static_cast<uint16_t>(cutscene);
+    if (IS_PAUSED(&gPlayState->pauseCtx)) {
+        return "the host is in the pause menu";
+    }
+    if (GetLaunchOptions().testHostRefuseExits) {
+        return "--coop-test-host-refuse-exits";
+    }
+    return nullptr;
+}
+
+void HostTakeExit(uint32_t from, uint16_t entrance, uint16_t cutscene) {
+    SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; the host takes the exit", from, entrance);
+    gPlayState->nextEntrance = entrance;
+    gSaveContext.nextCutsceneIndex = cutscene;
     gPlayState->transitionTrigger = TRANS_TRIGGER_START;
     gPlayState->transitionType = TRANS_TYPE_FADE_BLACK;
     gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK;
 }
 
+void HostOnSceneRequest(uint32_t from, const nlohmann::json& message) {
+    const int64_t entrance = Protocol::GetInt(message, "entrance", -1);
+    const int64_t cutscene = Protocol::GetInt(message, "cutscene", 0xFFEF);
+    if (entrance < 0 || entrance > 0xFFFF || !IsValidEntrance(static_cast<uint16_t>(entrance)) || cutscene < 0 ||
+        cutscene > 0xFFFF) {
+        SPDLOG_INFO("[Coop] Player {} asked for an invalid entrance; refused", from);
+        SendJson(from, { { "type", "scene_denied" }, { "reason", "invalid entrance" } });
+        return;
+    }
+    const char* busy = HostExitBusy();
+    if (busy != nullptr) {
+        // The test option keeps refusing without an answer (it tests the client's timeout).
+        if (GetLaunchOptions().testHostRefuseExits) {
+            SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; not now ({})", from,
+                        static_cast<uint16_t>(entrance), busy);
+            return;
+        }
+        sQueuedExit = { true, from, static_cast<uint16_t>(entrance), static_cast<uint16_t>(cutscene),
+                        SteadyClock::now() };
+        SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; queued until the host can ({})", from,
+                    static_cast<uint16_t>(entrance), busy);
+        SendJson(from, { { "type", "scene_wait" }, { "entrance", entrance }, { "reason", busy } });
+        return;
+    }
+    HostTakeExit(from, static_cast<uint16_t>(entrance), static_cast<uint16_t>(cutscene));
+}
+
+void HostUpdateQueuedExit() {
+    if (!sQueuedExit.active) {
+        return;
+    }
+    if (SteadyClock::now() - sQueuedExit.since > kExitWaitMax) {
+        sQueuedExit.active = false;
+        SPDLOG_INFO("[Coop] Queued exit to entrance 0x{:04X} for player {} dropped: the host was busy too long",
+                    sQueuedExit.entrance, sQueuedExit.from);
+        SendJson(sQueuedExit.from, { { "type", "scene_denied" }, { "reason", "the host was busy too long" } });
+        return;
+    }
+    if (HostExitBusy() == nullptr) {
+        sQueuedExit.active = false;
+        HostTakeExit(sQueuedExit.from, sQueuedExit.entrance, sQueuedExit.cutscene);
+    }
+}
+
+// Client: the host answered a held exit.
+void ClientOnSceneWait(uint32_t, const nlohmann::json& message) {
+    if (!sHeldExit.active || sHeldExit.waiting) {
+        return;
+    }
+    sHeldExit.waiting = true;
+    sHeldExit.since = SteadyClock::now();
+    SPDLOG_INFO("[Coop] The host takes the exit to entrance 0x{:04X} as soon as it can ({})", sHeldExit.entrance,
+                Protocol::GetString(message, "reason", "busy"));
+    Notify("Coop: esperando al host para cambiar de escena...");
+}
+
+void ClientOnSceneDenied(uint32_t, const nlohmann::json& message) {
+    if (!sHeldExit.active) {
+        return;
+    }
+    SPDLOG_INFO("[Coop] The host refused the exit to entrance 0x{:04X} ({})", sHeldExit.entrance,
+                Protocol::GetString(message, "reason", "refused"));
+    sHeldExit.waiting = false;
+    sHeldExit.since = SteadyClock::now() - kExitWaitMax; // The timeout path takes the client back next to the host
+}
 // MARK: - Hooks
 
 void OnSceneInit(s8 sceneId, s8 spawnNum) {
@@ -499,6 +579,8 @@ void RegisterSessionHooks() {
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnConsoleLogoUpdate>(OnConsoleLogoUpdate);
     RegisterJsonHandler("host_room", ClientOnHostRoom);
     RegisterJsonHandler("scene_request", HostOnSceneRequest);
+    RegisterJsonHandler("scene_wait", ClientOnSceneWait);
+    RegisterJsonHandler("scene_denied", ClientOnSceneDenied);
     RegisterJsonHandler("enter_request", HostOnEnterRequest);
     RegisterJsonHandler("enter_denied", ClientOnEnterDenied);
     RegisterBinaryHandler(Protocol::kChannelSnapshot, ClientOnSnapshot);
@@ -560,6 +642,9 @@ void SessionFrame() {
         const SessionSnapshot net = GetSnapshot();
         ClientLeaveSession(net.message.empty() ? "The connection to the host was closed" : net.message);
         return;
+    }
+    if (IsHosting()) {
+        HostUpdateQueuedExit();
     }
     if (sStage == ClientStage::InSession) {
         if (InGameplay()) {

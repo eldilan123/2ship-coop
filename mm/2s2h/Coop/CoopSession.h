@@ -27,6 +27,8 @@ void HostBroadcastSnapshot(uint16_t reason);
 
 // Called once per frame from the coop frame hook.
 void SessionFrame();
+// Client: an exit to another scene is held, waiting for the host to take it.
+bool HoldingExit();
 // Client: reload the host's scene and arrive next to the host (after the Link died).
 void ClientReturnToHost(const char* why);
 
