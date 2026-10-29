@@ -8,6 +8,7 @@
 #include <ship/Context.h>
 #include <ship/window/Window.h>
 #include "CoopArgs.h"
+#include "CoopBosses.h"
 #include "CoopClientDeath.h"
 #include "CoopClock.h"
 #include "CoopCutscene.h"
@@ -150,6 +151,7 @@ void OnFrame() {
     PlayerSync::Frame();
     Pause::Frame();
     Cutscene::Frame();
+    Bosses::Frame();
     // Before the puppets: a puppet whose room is not loaded here is not shown.
     Rooms::Frame();
     Puppet::Frame();

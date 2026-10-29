@@ -306,13 +306,33 @@ bool LocalOnly(int16_t actorId) {
            actorId == ACTOR_EN_SYATEKI_OKUTA || actorId == ACTOR_EN_DG;
 }
 
+bool SyncedBoss(int16_t actorId) {
+    switch (actorId) {
+        case ACTOR_BOSS_01:      // Odolwa, its bugs and afterimages
+        case ACTOR_BOSS_HAKUGIN: // Goht
+        case ACTOR_BOSS_03:      // Gyorg
+        case ACTOR_BOSS_02:      // Twinmold
+        case ACTOR_BOSS_04:      // Wart
+        case ACTOR_BOSS_05:      // Bio Deku Baba
+        case ACTOR_BOSS_06:      // Igos du Ikana's window
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool Synced(const Actor* actor) {
+    return (actor->category == ACTORCAT_ENEMY || (actor->category == ACTORCAT_BOSS && SyncedBoss(actor->id))) &&
+           !LocalOnly(actor->id);
+}
+
 bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why) {
     if (actorId < 0 || actorId >= ACTOR_ID_MAX || gActorOverlayTable[actorId].profile == nullptr) {
         why = "not in the actor table";
         return false;
     }
     const ActorProfile* profile = gActorOverlayTable[actorId].profile;
-    const bool enemy = profile->type == ACTORCAT_ENEMY ||
+    const bool enemy = profile->type == ACTORCAT_ENEMY || (profile->type == ACTORCAT_BOSS && SyncedBoss(actorId)) ||
                        InList(kBecomeEnemies, sizeof(kBecomeEnemies) / sizeof(kBecomeEnemies[0]), actorId);
     if (!enemy) {
         why = "not an enemy type";

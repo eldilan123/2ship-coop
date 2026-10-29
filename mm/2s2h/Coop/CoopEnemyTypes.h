@@ -47,6 +47,12 @@ bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why);
 // can play a gallery in its own game (its keeper spawns them), and the dogs (En_Dg, ENEMY though harmless: the dog
 // race's pen dogs are picked up by that game's Link; the town's dogs are each game's too).
 bool LocalOnly(int16_t actorId);
+// Milestone 8, level A: the bosses (ACTORCAT_BOSS) the host simulates and the client sees as puppets it can hit; they
+// keep going after the host (Targeting only steers ENEMY actors). Majora (Boss_07) is not one yet: the client removes
+// its own (CoopBosses.cpp).
+bool SyncedBoss(int16_t actorId);
+// An actor the enemy system follows: an enemy, or a synced boss, and not LocalOnly.
+bool Synced(const Actor* actor);
 
 } // namespace Coop::Enemies
 

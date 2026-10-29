@@ -654,10 +654,11 @@ void HostFrame() {
     CaptureAcRegistrations(play);
 
     std::vector<uint16_t> fresh;
-    for (Actor* actor = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
-        if (actor->init == nullptr && actor->update != nullptr && sHostByActor.count(actor) == 0 &&
-            !LocalOnly(actor->id)) {
-            fresh.push_back(HostTrack(actor));
+    for (int category : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        for (Actor* actor = play->actorCtx.actorLists[category].first; actor != nullptr; actor = actor->next) {
+            if (actor->init == nullptr && actor->update != nullptr && sHostByActor.count(actor) == 0 && Synced(actor)) {
+                fresh.push_back(HostTrack(actor));
+            }
         }
     }
     const RoomSet rooms = CurrentRooms();
@@ -882,9 +883,8 @@ void MakePuppet(Actor* actor, uint16_t netId, const Origin* origin) {
 
 // Client: every enemy becomes a puppet before its first update (Init has just run, its category is final).
 void ClientOnActorInit(Actor* actor) {
-    if (IsHosting() || !IsClientInSession() || actor->category != ACTORCAT_ENEMY || sPuppets.count(actor) != 0 ||
-        LocalOnly(actor->id)) {
-        return; // A gallery's targets are the client's own (milestone 7)
+    if (IsHosting() || !IsClientInSession() || !Synced(actor) || sPuppets.count(actor) != 0) {
+        return; // A gallery's targets are the client's own (milestone 7); a boss not synced yet is CoopBosses'
     }
     if (actor->update == nullptr) {
         return; // Init killed it
@@ -1669,12 +1669,14 @@ void ClientFrame() {
         RequestManifest("none yet");
     }
     // Actors that became enemies after their Init (a pot that starts flying...) are puppets from then on too.
-    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr;) {
-        Actor* next = actor->next;
-        if (actor->init == nullptr && actor->update != nullptr && sPuppets.count(actor) == 0) {
-            ClientOnActorInit(actor);
+    for (int category : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        for (Actor* actor = gPlayState->actorCtx.actorLists[category].first; actor != nullptr;) {
+            Actor* next = actor->next;
+            if (actor->init == nullptr && actor->update != nullptr && sPuppets.count(actor) == 0) {
+                ClientOnActorInit(actor);
+            }
+            actor = next;
         }
-        actor = next;
     }
     LogLocalRemovals();
     Materialize(now);
