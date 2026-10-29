@@ -20,7 +20,13 @@ extern "C" {
 // another room).
 // Enemy types that take hold of the player (grab, paralyze, steal) or start a cutscene stay on the host.
 //
+// Bosses (milestone 8): level A, every synced boss goes after the host. Level B, the bosses in kNearestBosses go after
+// the nearest player like an enemy (gCoop.BossNearest, 1 by default), except while a cutscene runs: a boss's intro and
+// death move and freeze "the player", which must be the host's Link.
+//
 // Game thread only.
+#define CVAR_COOP_BOSS_NEAREST "gCoop.BossNearest" // 1 (default): level B bosses go after the nearest player
+
 namespace Coop::Targeting {
 
 // Called once per frame from the coop frame hook (first thing: nothing may still be viewing a puppet then).

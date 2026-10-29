@@ -8,6 +8,7 @@
 #include <vector>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
+#include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopEnemies.h"
@@ -71,6 +72,24 @@ const std::unordered_map<int16_t, const char*> kHostOnly = {
     { ACTOR_EN_CROW, "keeps a pointer to the player" },
     { ACTOR_EN_MINIDEATH, "keeps a pointer to the player" },
 };
+
+// Milestone 8, level B: bosses that go after the nearest player (the others stay on the host, level A).
+const std::unordered_map<int16_t, const char*> kNearestBosses = {
+    { ACTOR_BOSS_01, "Odolwa (and its bugs)" },
+};
+
+// An actor this module steers: an enemy, or a level B boss.
+bool Steered(const Actor* actor) {
+    if (actor->category == ACTORCAT_ENEMY) {
+        return true;
+    }
+    return actor->category == ACTORCAT_BOSS && kNearestBosses.count(actor->id) != 0 &&
+           CVarGetInteger(CVAR_COOP_BOSS_NEAREST, 1) != 0;
+}
+
+bool CutsceneRunning() {
+    return CutsceneManager_GetCurrentCsId() != CS_ID_NONE || gPlayState->csCtx.state != CS_STATE_IDLE;
+}
 
 struct TargetState {
     uint32_t playerId = 0; // 0: not chosen yet
@@ -311,7 +330,7 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     if (sView.enemy != nullptr) {
         RestoreLeftover("the next actor's update");
     }
-    if (actor->category != ACTORCAT_ENEMY || !Active() || Enemies::LocalOnly(actor->id)) {
+    if (!Steered(actor) || !Active() || Enemies::LocalOnly(actor->id)) {
         return;
     }
     TargetState& t = sTargets[actor];
@@ -336,6 +355,10 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     }
     if (viewId == kHostPlayerId) {
         return; // The engine already measured everything against the host's Link
+    }
+    // A boss's intro and death cutscenes move and freeze "the player": the host's Link, whoever its target is.
+    if (actor->category == ACTORCAT_BOSS && CutsceneRunning()) {
+        return;
     }
     Player* puppet = Puppet::PuppetOf(viewId);
     PlayerSync::State s;
@@ -399,18 +422,20 @@ void StatsAndSamples(uint32_t now) {
     }
     sLastSampleSecond = second;
     const std::vector<Candidate> candidates = Candidates();
-    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
-        auto t = sTargets.find(actor);
-        if (t == sTargets.end() || actor->update == nullptr) {
-            continue;
-        }
-        bool nearSomeone = false;
-        for (const Candidate& c : candidates) {
-            nearSomeone |= Actor_WorldDistXYZToActor(actor, &c.player->actor) < kSampleRange;
-        }
-        if (nearSomeone) {
-            SPDLOG_INFO("[Coop] enemy-target-sample: net {} {} target {} ({})", Enemies::HostNetIdOf(actor),
-                        Enemies::TypeName(actor->id), t->second.playerId, Distances(actor, candidates));
+    for (int category : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        for (Actor* actor = gPlayState->actorCtx.actorLists[category].first; actor != nullptr; actor = actor->next) {
+            auto t = sTargets.find(actor);
+            if (t == sTargets.end() || actor->update == nullptr) {
+                continue;
+            }
+            bool nearSomeone = false;
+            for (const Candidate& c : candidates) {
+                nearSomeone |= Actor_WorldDistXYZToActor(actor, &c.player->actor) < kSampleRange;
+            }
+            if (nearSomeone) {
+                SPDLOG_INFO("[Coop] enemy-target-sample: net {} {} target {} ({})", Enemies::HostNetIdOf(actor),
+                            Enemies::TypeName(actor->id), t->second.playerId, Distances(actor, candidates));
+            }
         }
     }
 }
@@ -496,13 +521,13 @@ void Frame() {
 }
 
 void NoteVictim(const Actor* enemy, uint32_t playerId) {
-    if (enemy->category == ACTORCAT_ENEMY && kHostOnly.count(enemy->id) == 0) {
+    if (Steered(enemy) && kHostOnly.count(enemy->id) == 0) {
         sVictims[enemy] = playerId;
     }
 }
 
 bool StaysOnHost(const Actor* enemy) {
-    return enemy->category == ACTORCAT_ENEMY && kHostOnly.count(enemy->id) != 0;
+    return Steered(enemy) && kHostOnly.count(enemy->id) != 0;
 }
 
 uint32_t TargetOf(const Actor* enemy) {
