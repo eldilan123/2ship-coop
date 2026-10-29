@@ -343,6 +343,14 @@ int sApplied = 0;
 int sRejected = 0;
 int sOverdraws = 0;
 int sStatesSent = 0;
+// Chest and collectible flags a client took (applied here): the host's own game must not give their item too.
+struct HostClaim {
+    bool chest;
+    int flag;
+    int64_t atMs;
+    uint32_t player;
+};
+std::vector<HostClaim> sHostClaims;
 
 void Drop(const char* what, const char* why) {
     SPDLOG_WARN("[Coop] Dropping {}: {}", what, why);
@@ -456,6 +464,20 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
     WriteAll(values, true);
     sApplied++;
     c.applied[seq] = ops;
+    for (const Op& op : ops) {
+        const Unit& u = units[op.unit];
+        const u32 claimed = static_cast<u32>(op.to & ~op.from);
+        for (int bit = 0; u.kind == Kind::Claim && bit < 32; bit++) {
+            if (claimed & (1u << bit)) {
+                const bool chest = u.name == "live chest flags";
+                sHostClaims.push_back({ chest, chest ? bit : u.index * 32 + bit, NowMs(), from });
+            }
+        }
+    }
+    const int64_t claimNow = NowMs();
+    sHostClaims.erase(std::remove_if(sHostClaims.begin(), sHostClaims.end(),
+                                     [&](const HostClaim& h) { return claimNow - h.atMs > 10000; }),
+                      sHostClaims.end());
     while (c.applied.size() > 64) {
         c.applied.erase(c.applied.begin());
     }
@@ -667,7 +689,27 @@ void SettleClaims(uint64_t ack, const std::vector<std::pair<uint32_t, std::strin
 // The game is about to give an item: if it comes from a chest or collectible the other player took first, it is not
 // given again here (it went to the shared pool once, with the other player).
 void OnShouldItemGive(u8 item, bool* should) {
-    if (IsHosting() || !sHaveAuth || gPlayState == nullptr || !*should) {
+    if (gPlayState == nullptr || !*should || !Enabled() || (!IsHosting() && !sHaveAuth)) {
+        return;
+    }
+    if (IsHosting()) {
+        const Actor* source = GET_PLAYER(gPlayState)->interactRangeActor;
+        if (source == nullptr || (source->id != ACTOR_EN_BOX && source->id != ACTOR_EN_ITEM00)) {
+            return;
+        }
+        const bool chest = source->id == ACTOR_EN_BOX;
+        const int flag =
+            chest ? ENBOX_GET_CHEST_FLAG(source) : reinterpret_cast<const EnItem00*>(source)->collectibleFlag;
+        const int64_t now = NowMs();
+        for (const HostClaim& c : sHostClaims) {
+            if (c.chest == chest && c.flag == flag && now - c.atMs < 10000) {
+                *should = false;
+                SPDLOG_INFO(
+                    "[Coop] inv: {} flag 0x{:02X} was taken by player {} first; item 0x{:02X} is not given here",
+                    chest ? "chest" : "collectible", flag, c.player, item);
+                return;
+            }
+        }
         return;
     }
     const Actor* source = GET_PLAYER(gPlayState)->interactRangeActor;
