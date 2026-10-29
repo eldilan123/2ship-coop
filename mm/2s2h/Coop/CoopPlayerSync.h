@@ -16,9 +16,11 @@ extern "C" {
 namespace Coop::PlayerSync {
 
 // Bump when State changes.
-constexpr uint16_t kFormatVersion = 3;
+constexpr uint16_t kFormatVersion = 4;
 constexpr uint32_t kMagic = 0x53504C50; // "PLPS"
 constexpr size_t kAnimNameSize = 96;
+constexpr uint8_t kBusyCutscene = 1 << 0;
+constexpr uint8_t kBusyTalking = 1 << 1;
 
 struct State {
     uint32_t magic;
@@ -53,7 +55,7 @@ struct State {
     // Skeleton pose after the update (before the draw edits the legs)
     PlayerAnimationFrame jointTable;
     uint8_t movementFlags;
-    uint8_t pad2;
+    uint8_t busy; // kBusyCutscene / kBusyTalking: what the sender's Link is doing (enemies leave it alone)
     float curFrame;
     float upperCurFrame;
     char animName[kAnimNameSize]; // The draw code compares animations by name

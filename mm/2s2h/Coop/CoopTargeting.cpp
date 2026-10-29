@@ -234,7 +234,7 @@ std::vector<Candidate> Candidates() {
         if (puppet == nullptr || puppet->actor.update == nullptr || !PlayerSync::LatestState(info.id, s, &age) ||
             age > kFreshStateMs || !s.inGameplay || s.sceneId != gPlayState->sceneId ||
             s.sceneLayer != static_cast<int8_t>(gSaveContext.sceneLayer) || (s.stateFlags1 & PLAYER_STATE1_DEAD) ||
-            s.csAction != PLAYER_CSACTION_NONE || s.paused || !RoomLoaded(s.roomNum)) {
+            s.csAction != PLAYER_CSACTION_NONE || s.paused || s.busy != 0 || !RoomLoaded(s.roomNum)) {
             continue;
         }
         out.push_back({ info.id, puppet });

@@ -10,6 +10,7 @@
 #include "CoopArgs.h"
 #include "CoopClientDeath.h"
 #include "CoopClock.h"
+#include "CoopCutscene.h"
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyHealth.h"
@@ -148,6 +149,7 @@ void OnFrame() {
     Clock::Frame();
     PlayerSync::Frame();
     Pause::Frame();
+    Cutscene::Frame();
     // Before the puppets: a puppet whose room is not loaded here is not shown.
     Rooms::Frame();
     Puppet::Frame();

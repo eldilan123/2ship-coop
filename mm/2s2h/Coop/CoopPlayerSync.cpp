@@ -14,6 +14,7 @@
 #include "2s2h/ShipInit.hpp"
 
 extern "C" {
+#include "functions.h"
 #include "macros.h"
 #include "variables.h"
 }
@@ -149,6 +150,14 @@ void CaptureAndSend(Actor* actor) {
                                                  : Enemies::PuppetNetIdOf(player->focusActor);
     s.health = gSaveContext.save.saveInfo.playerData.health;
     s.healthCapacity = gSaveContext.save.saveInfo.playerData.healthCapacity;
+    // Milestone 7: in a cutscene or a dialogue the other games' enemies leave this Link alone (and say so).
+    if (CutsceneManager_GetCurrentCsId() != CS_ID_NONE || gPlayState->csCtx.state != CS_STATE_IDLE ||
+        player->csAction != PLAYER_CSACTION_NONE) {
+        s.busy |= kBusyCutscene;
+    }
+    if (gPlayState->msgCtx.msgMode != MSGMODE_NONE || (player->stateFlags1 & PLAYER_STATE1_TALKING)) {
+        s.busy |= kBusyTalking;
+    }
 
     SendBinary(IsHosting() ? kBroadcast : kHostPlayerId, Protocol::kChannelPlayerState, &s, sizeof(s));
     sLastSent = s;
