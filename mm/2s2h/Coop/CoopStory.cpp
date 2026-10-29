@@ -64,9 +64,11 @@ bool IsInvasionPart(const Actor* a) {
 // its targets and baskets are each game's BG actors; a round's start clears that game's explosives, the other
 // player's copies too), Grog (En_Hs: the chicks are each game's props and follow that game's Link), the dog race
 // (En_Aob_01: its state is eventInf, each player's; the racing dogs are NPCs and the pen dogs Enemies::LocalOnly; the
-// race starts and ends with an exit, so the host goes too) and the Deku Butler's race (En_Dno: the butler, the timer
+// race starts and ends with an exit, so the host goes too), the Deku Butler's race (En_Dno: the butler, the timer
 // and the closing doors are the racer's game's; the switch flags that open the doors and mark the race are shared,
-// so the other game's doors open and reset with them).
+// so the other game's doors open and reset with them), and the night robbery (En_Baba, En_Suttari: NPCs with a
+// schedule in each game; what happens to the bag is story flags, so the other game's Sakon and the old lady follow them
+// at their next schedule check).
 struct Blocked {
     s16 id;
     const char* reason;
@@ -74,8 +76,6 @@ struct Blocked {
 constexpr Blocked kBlocked[] = {
     { ACTOR_EN_AN, "Anju: her schedule and events (with Kafei) live in one game" },
     { ACTOR_EN_TEST3, "Kafei: his schedule and events live in one game" },
-    { ACTOR_EN_BABA, "the bomb shop lady and the night robbery: one game's event" },
-    { ACTOR_EN_SUTTARI, "Sakon and the night robbery: one game's event" },
 };
 
 int sCutscenesFromClient = 0;
