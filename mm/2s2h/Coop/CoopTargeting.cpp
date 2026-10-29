@@ -76,6 +76,7 @@ const std::unordered_map<int16_t, const char*> kHostOnly = {
 // Milestone 8, level B: bosses that go after the nearest player (the others stay on the host, level A).
 const std::unordered_map<int16_t, const char*> kNearestBosses = {
     { ACTOR_BOSS_01, "Odolwa (and its bugs)" },
+    { ACTOR_BOSS_HAKUGIN, "Goht (its throw does not take hold of a puppet: the player only gets the knockback)" },
 };
 
 // An actor this module steers: an enemy, or a level B boss.
@@ -129,6 +130,7 @@ struct View {
     u8 csAction = 0;
     u8 unk_D57 = 0;
     Actor* focusActor = nullptr;
+    Actor* parent = nullptr; // Goht's throw "attaches" the player to its head; a puppet is never attached
 };
 View sView;
 
@@ -144,6 +146,12 @@ void EndView() {
     p->csAction = sView.csAction;
     p->unk_D57 = sView.unk_D57;
     p->focusActor = sView.focusActor;
+    if (p->actor.parent != sView.parent) {
+        SPDLOG_INFO("[Coop] enemy-target: {} took hold of player {}'s puppet; let go (that player only gets the "
+                    "knockback)",
+                    Enemies::TypeName(sView.enemy->id), sView.playerId);
+        p->actor.parent = sView.parent;
+    }
     // A knockback the enemy asked for during its update (func_800B8D10 writes these on "the player"): the puppet
     // never takes it, its player does.
     if (p->unk_B75 != 0 && sView.enemy != nullptr) {
@@ -180,6 +188,7 @@ void BeginView(Actor* enemy, Player* puppet, uint32_t playerId, const PlayerSync
     sView.csAction = puppet->csAction;
     sView.unk_D57 = puppet->unk_D57;
     sView.focusActor = puppet->focusActor;
+    sView.parent = puppet->actor.parent;
     puppet->meleeWeaponState = s.meleeWeaponState;
     puppet->meleeWeaponAnimation = s.meleeWeaponAnimation;
     puppet->invincibilityTimer = s.invincibilityTimer;
