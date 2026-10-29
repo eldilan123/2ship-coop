@@ -655,7 +655,8 @@ void HostFrame() {
 
     std::vector<uint16_t> fresh;
     for (Actor* actor = play->actorCtx.actorLists[ACTORCAT_ENEMY].first; actor != nullptr; actor = actor->next) {
-        if (actor->init == nullptr && actor->update != nullptr && sHostByActor.count(actor) == 0) {
+        if (actor->init == nullptr && actor->update != nullptr && sHostByActor.count(actor) == 0 &&
+            !LocalOnly(actor->id)) {
             fresh.push_back(HostTrack(actor));
         }
     }
@@ -881,8 +882,9 @@ void MakePuppet(Actor* actor, uint16_t netId, const Origin* origin) {
 
 // Client: every enemy becomes a puppet before its first update (Init has just run, its category is final).
 void ClientOnActorInit(Actor* actor) {
-    if (IsHosting() || !IsClientInSession() || actor->category != ACTORCAT_ENEMY || sPuppets.count(actor) != 0) {
-        return;
+    if (IsHosting() || !IsClientInSession() || actor->category != ACTORCAT_ENEMY || sPuppets.count(actor) != 0 ||
+        LocalOnly(actor->id)) {
+        return; // A gallery's targets are the client's own (milestone 7)
     }
     if (actor->update == nullptr) {
         return; // Init killed it

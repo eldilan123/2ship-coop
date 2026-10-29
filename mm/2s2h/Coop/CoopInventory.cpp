@@ -76,6 +76,15 @@ SavePlayerData& Pd() {
 
 constexpr u32 kQuestBitsMask = 0x0FFFFFFF; // Bits 28-31 are the heart piece count
 
+} // namespace
+
+bool ChestFlagsAreScore() {
+    return gPlayState != nullptr &&
+           (gPlayState->sceneId == SCENE_SYATEKI_MIZU || gPlayState->sceneId == SCENE_SYATEKI_MORI);
+}
+
+namespace {
+
 const std::vector<Unit>& Units() {
     static const std::vector<Unit> sUnits = [] {
         std::vector<Unit> u;
@@ -98,6 +107,10 @@ const std::vector<Unit>& Units() {
                       },
                       [](int, int64_t v) { Pd().rupees = static_cast<s16>(v - gSaveContext.rupeeAccumulator); }, 0, -1,
                       false, []() -> int64_t { return CUR_CAPACITY(UPG_WALLET); } });
+        // Milestone 7: the shooting galleries' records (town in the low half, swamp in the high one).
+        u.push_back({ "shooting gallery records", Kind::Value, 0, 0xFFFFFFFFll,
+                      [](int) -> int64_t { return static_cast<u32>(HIGH_SCORE(HS_SHOOTING_GALLERY)); },
+                      [](int, int64_t v) { HIGH_SCORE(HS_SHOOTING_GALLERY) = static_cast<u32>(v); }, 0, -1 });
         u.push_back({ "bank rupees", Kind::Counter, 0, 0xFFFF, [](int) -> int64_t { return HS_GET_BANK_RUPEES(); },
                       [](int, int64_t v) { HS_SET_BANK_RUPEES(static_cast<u32>(v)); }, 0, -1 });
         u.push_back({ "equipment", Kind::Value, 0, 0xFFFF,
@@ -199,10 +212,14 @@ const std::vector<Unit>& Units() {
                     [](int k, int64_t v) { gSaveContext.save.saveInfo.unk_EA8[k] = static_cast<u32>(v); }, i, -1 });
         } // Claims: what a chest or a collectible gave. A bit set by one game that the host already has set is the
         // second one taking the same thing: its whole event (the item or rupees with it) is rejected.
+        // In the shooting galleries the chest flags hold the keeper's score (Flags_SetAllTreasure): each game's own.
         u.push_back({ "live chest flags", Kind::Claim, 0, 0xFFFFFFFFll,
-                      [](int) -> int64_t { return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.chest : 0; },
+                      [](int) -> int64_t {
+                          return gPlayState != nullptr && !ChestFlagsAreScore() ? gPlayState->actorCtx.sceneFlags.chest
+                                                                                : 0;
+                      },
                       [](int, int64_t v) {
-                          if (gPlayState != nullptr) {
+                          if (gPlayState != nullptr && !ChestFlagsAreScore()) {
                               gPlayState->actorCtx.sceneFlags.chest = static_cast<u32>(v);
                           }
                       },

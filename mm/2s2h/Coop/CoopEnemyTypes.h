@@ -43,6 +43,9 @@ const char* TypeDescription(int16_t actorId);
 // fields only (pose, placement, scale, color filter).
 // `withParent`: the host spawned it from another enemy and the client has that enemy's puppet.
 bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why);
+// Enemy types each game runs on its own, never synced (milestone 7): the shooting galleries' targets, so the client
+// can play a gallery in its own game (its keeper spawns them).
+bool LocalOnly(int16_t actorId);
 
 } // namespace Coop::Enemies
 

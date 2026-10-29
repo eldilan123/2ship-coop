@@ -46,6 +46,9 @@ void Cancel(uint32_t seq);
 
 // Test only (host): sends malformed inv_event / inv_state messages.
 void TestFuzz();
+// The current scene keeps something other than chests in its chest flags (the shooting galleries' keeper writes its
+// score there): those flags are each game's own, neither sent nor checked.
+bool ChestFlagsAreScore();
 
 } // namespace Coop::Inventory
 

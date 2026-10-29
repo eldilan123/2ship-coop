@@ -16,7 +16,7 @@ namespace Coop::Protocol {
 // Coop protocol number. BUMP BY HAND whenever the wire format or the meaning of any message changes (new required
 // field, changed type, new binary channel layout...). The host rejects a client whose protocol number or build ID
 // differs from its own.
-constexpr int kProtocolVersion = 12;
+constexpr int kProtocolVersion = 13;
 
 // Binary channels (SendBinary). JSON control types are listed in CoopNet.cpp. Application JSON types:
 // "enter_request" / "enter_denied" (client enters the host's world), "host_room" (host changed room) and

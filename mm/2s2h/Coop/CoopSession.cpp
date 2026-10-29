@@ -426,6 +426,13 @@ const char* HostExitBusy() {
 
 void HostTakeExit(uint32_t from, uint16_t entrance, uint16_t cutscene) {
     SPDLOG_INFO("[Coop] Player {} asked to go to entrance 0x{:04X}; the host takes the exit", from, entrance);
+    // A minigame the host was playing ends here (its keeper never stops the timer: Romani's horseback game when the
+    // client finished first).
+    if (gSaveContext.timerStates[TIMER_ID_MINIGAME_2] != TIMER_STATE_OFF) {
+        SPDLOG_INFO("[Coop] The host's minigame timer stops (state {}): it leaves with the client's exit",
+                    gSaveContext.timerStates[TIMER_ID_MINIGAME_2]);
+        gSaveContext.timerStates[TIMER_ID_MINIGAME_2] = TIMER_STATE_OFF;
+    }
     gPlayState->nextEntrance = entrance;
     gSaveContext.nextCutsceneIndex = cutscene;
     gPlayState->transitionTrigger = TRANS_TRIGGER_START;

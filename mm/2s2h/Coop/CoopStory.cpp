@@ -55,20 +55,21 @@ bool IsInvasionPart(const Actor* a) {
     const int type = (a->params >> 4) & 0xF; // EN_INVADEPOH_GET_TYPE
     return type == 0 || type == 1 || type == 6 || type == 13;
 }
-// NPCs whose state only one game can run: the client cannot talk to them yet (priority of milestone 7).
+// NPCs whose state only one game can run: the client cannot talk to them yet (priority of milestone 7). Unblocked so
+// far: Romani (En_Ma4: her horseback game is a scene layer, so the host goes there too and both play it) and the
+// shooting galleries (En_Syateki_Man: each game runs its own targets and score, Enemies::LocalOnly and
+// Inventory::ChestFlagsAreScore; the records are shared).
 struct Blocked {
     s16 id;
     const char* reason;
 };
 constexpr Blocked kBlocked[] = {
-    { ACTOR_EN_SYATEKI_MAN, "shooting gallery: score, timer and targets live in one game" },
     { ACTOR_EN_TAKARAYA, "treasure chest shop: its maze and timer live in one game" },
     { ACTOR_EN_KENDO_JS, "swordsman's school: the minigame lives in one game" },
     { ACTOR_EN_FU, "Honey & Darling: the minigame lives in one game" },
     { ACTOR_EN_AOB_01, "dog race: the race lives in one game" },
     { ACTOR_EN_HS, "Grog's chicks: the chicks follow one Link" },
     { ACTOR_EN_DNO, "Deku Butler's race: the race reads the butler's position" },
-    { ACTOR_EN_MA4, "Romani's alien defense: the minigame lives in one game" },
     { ACTOR_EN_AN, "Anju: her schedule and events (with Kafei) live in one game" },
     { ACTOR_EN_TEST3, "Kafei: his schedule and events live in one game" },
     { ACTOR_EN_BABA, "the bomb shop lady and the night robbery: one game's event" },

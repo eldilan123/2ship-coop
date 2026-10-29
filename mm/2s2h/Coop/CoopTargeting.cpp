@@ -311,7 +311,7 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     if (sView.enemy != nullptr) {
         RestoreLeftover("the next actor's update");
     }
-    if (actor->category != ACTORCAT_ENEMY || !Active()) {
+    if (actor->category != ACTORCAT_ENEMY || !Active() || Enemies::LocalOnly(actor->id)) {
         return;
     }
     TargetState& t = sTargets[actor];

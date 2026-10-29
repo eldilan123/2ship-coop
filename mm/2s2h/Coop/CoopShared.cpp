@@ -8,6 +8,7 @@
 #include <vector>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
+#include "CoopInventory.h"
 #include "CoopRooms.h"
 #include "CoopSaveGuard.h"
 #include "CoopSession.h"
@@ -116,9 +117,15 @@ const std::vector<Field>& Fields() {
         f.push_back({ "cycleSceneFlags (other scenes)", Group::Flags, [](std::vector<uint8_t>& out) {
                          const int current = gPlayState != nullptr ? Play_GetOriginalSceneId(gPlayState->sceneId) : -1;
                          for (int i = 0; i < ARRAY_COUNT(gSaveContext.cycleSceneFlags); i++) {
-                             if (i != current) {
-                                 Put(out, &gSaveContext.cycleSceneFlags[i], sizeof(gSaveContext.cycleSceneFlags[i]));
+                             if (i == current) {
+                                 continue;
                              }
+                             CycleSceneFlags flags = gSaveContext.cycleSceneFlags[i];
+                             // The shooting galleries' chest flags are their keeper's score: each game's own.
+                             if (i == SCENE_SYATEKI_MIZU || i == SCENE_SYATEKI_MORI) {
+                                 flags.chest = 0;
+                             }
+                             Put(out, &flags, sizeof(flags));
                          }
                      } });
         f.push_back({ "owl statues", Group::Flags, RAW(gSaveContext.save.saveInfo.playerData.owlActivationFlags) });
@@ -167,7 +174,10 @@ const std::vector<Field>& Fields() {
         f.push_back({ "live switch flags 0x40-0x7F", Group::World, [](std::vector<uint8_t>& out) {
                          Put(out, &gPlayState->actorCtx.sceneFlags.switches[2], 2 * sizeof(u32));
                      } });
-        f.push_back({ "live chest flags", Group::World, RAW(gPlayState->actorCtx.sceneFlags.chest) });
+        f.push_back({ "live chest flags", Group::World, [](std::vector<uint8_t>& out) {
+                         const u32 chest = Inventory::ChestFlagsAreScore() ? 0 : gPlayState->actorCtx.sceneFlags.chest;
+                         Put(out, &chest, sizeof(chest));
+                     } });
         f.push_back({ "live room clear flags", Group::World, [](std::vector<uint8_t>& out) {
                          const ActorContextSceneFlags& s = gPlayState->actorCtx.sceneFlags;
                          Put(out, &s.clearedRoom, sizeof(s.clearedRoom));
