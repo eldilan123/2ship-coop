@@ -11,6 +11,7 @@
 #include "CoopRooms.h"
 #include "CoopSaveGuard.h"
 #include "CoopSession.h"
+#include "CoopStory.h"
 #include "2s2h/ShipInit.hpp"
 
 extern "C" {
@@ -99,11 +100,16 @@ const std::vector<Field>& Fields() {
                                             "weekEventReg[30-39]", "weekEventReg[40-49]", "weekEventReg[50-59]",
                                             "weekEventReg[60-69]", "weekEventReg[70-79]", "weekEventReg[80-89]",
                                             "weekEventReg[90-99]" };
+            // Each player's own bits (CoopStory.cpp) are left out.
             f.push_back({ kNames[block], Group::Flags, [block](std::vector<uint8_t>& out) {
-                             Put(out, &gSaveContext.save.saveInfo.weekEventReg[block * 10], 10);
+                             for (int k = block * 10; k < block * 10 + 10; k++) {
+                                 const u8 v =
+                                     gSaveContext.save.saveInfo.weekEventReg[k] & ~Story::LocalWeekEventBits(k);
+                                 Put(out, &v, 1);
+                             }
                          } });
         }
-        f.push_back({ "eventInf", Group::Flags, RAW(gSaveContext.eventInf) });
+        // eventInf is each player's own (temporary state: minigames, the day's telop...): not compared.
         f.push_back({ "permanentSceneFlags", Group::Flags, RAW(gSaveContext.save.saveInfo.permanentSceneFlags) });
         // The current scene's entry is left out: both sides only copy their live flags there when they leave it (the
         // live flags are the world group).

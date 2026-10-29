@@ -11,6 +11,7 @@
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopSession.h"
+#include "CoopStory.h"
 #include "CoopWorld.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
@@ -62,6 +63,8 @@ struct Unit {
     bool world = false;
     // A counter whose top depends on the save (rupees: the wallet), like the game itself keeps it.
     int64_t (*cap)() = nullptr;
+    // Story (phase 3): only sent from the client while gCoop.StoryFromClient is on.
+    bool story = false;
 };
 
 ::Inventory& Inv() {
@@ -150,7 +153,51 @@ const std::vector<Unit>& Units() {
         u.push_back({ "stolenItems", Kind::Value, 0, 0xFFFFFFFFll,
                       [](int) -> int64_t { return gSaveContext.save.saveInfo.stolenItems; },
                       [](int, int64_t v) { gSaveContext.save.saveInfo.stolenItems = static_cast<u32>(v); }, 0, -1 });
-        // Claims: what a chest or a collectible gave. A bit set by one game that the host already has set is the
+        // Story (phase 3): weekEventReg without each player's own bits (CoopStory.cpp), and the other story fields.
+        auto story = [&](Unit x) {
+            x.story = true;
+            u.push_back(x);
+        };
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.save.saveInfo.weekEventReg); i++) {
+            story({ fmt::format("weekEventReg[{}]", i), Kind::Bits, 0, 0xFF,
+                    [](int k) -> int64_t {
+                        return gSaveContext.save.saveInfo.weekEventReg[k] & ~Story::LocalWeekEventBits(k);
+                    },
+                    [](int k, int64_t v) {
+                        const u8 local = Story::LocalWeekEventBits(k);
+                        u8& reg = gSaveContext.save.saveInfo.weekEventReg[k];
+                        reg = static_cast<u8>((reg & local) | (static_cast<u8>(v) & ~local));
+                    },
+                    i, -1 });
+        }
+        story({ "owl statues", Kind::Bits, 0, 0xFFFF, [](int) -> int64_t { return Pd().owlActivationFlags; },
+                [](int, int64_t v) { Pd().owlActivationFlags = static_cast<u16>(v); }, 0, -1 });
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.save.saveInfo.scenesVisible); i++) {
+            story({ fmt::format("scenesVisible[{}]", i), Kind::Bits, 0, 0xFFFFFFFFll,
+                    [](int k) -> int64_t { return gSaveContext.save.saveInfo.scenesVisible[k]; },
+                    [](int k, int64_t v) { gSaveContext.save.saveInfo.scenesVisible[k] = static_cast<u32>(v); }, i,
+                    -1 });
+        }
+        story({ "regionsVisited", Kind::Bits, 0, 0xFFFFFFFFll,
+                [](int) -> int64_t { return gSaveContext.save.saveInfo.regionsVisited; },
+                [](int, int64_t v) { gSaveContext.save.saveInfo.regionsVisited = static_cast<u32>(v); }, 0, -1 });
+        story({ "worldMapCloudVisibility", Kind::Bits, 0, 0xFFFFFFFFll,
+                [](int) -> int64_t { return gSaveContext.save.saveInfo.worldMapCloudVisibility; },
+                [](int, int64_t v) { gSaveContext.save.saveInfo.worldMapCloudVisibility = static_cast<u32>(v); }, 0,
+                -1 });
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.masksGivenOnMoon); i++) {
+            story({ fmt::format("masksGivenOnMoon[{}]", i), Kind::Bits, 0, 0xFF,
+                    [](int k) -> int64_t { return gSaveContext.masksGivenOnMoon[k]; },
+                    [](int k, int64_t v) { gSaveContext.masksGivenOnMoon[k] = static_cast<u8>(v); }, i, -1 });
+        }
+        story({ "gossip stone heart pieces", Kind::Bits, 0, 0xFFFFFFFFll,
+                [](int) -> int64_t { return gSaveContext.save.saveInfo.unk_EA0; },
+                [](int, int64_t v) { gSaveContext.save.saveInfo.unk_EA0 = static_cast<u32>(v); }, 0, -1 });
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.save.saveInfo.unk_EA8); i++) {
+            story({ fmt::format("blue warps[{}]", i), Kind::Bits, 0, 0xFFFFFFFFll,
+                    [](int k) -> int64_t { return gSaveContext.save.saveInfo.unk_EA8[k]; },
+                    [](int k, int64_t v) { gSaveContext.save.saveInfo.unk_EA8[k] = static_cast<u32>(v); }, i, -1 });
+        } // Claims: what a chest or a collectible gave. A bit set by one game that the host already has set is the
         // second one taking the same thing: its whole event (the item or rupees with it) is rejected.
         u.push_back({ "live chest flags", Kind::Claim, 0, 0xFFFFFFFFll,
                       [](int) -> int64_t { return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.chest : 0; },
@@ -671,7 +718,7 @@ uint32_t ClientCapture() {
     const std::vector<int64_t> live = ReadAll();
     std::vector<Op> ops;
     for (size_t i = 0; i < live.size(); i++) {
-        if (live[i] != expected[i] && (worldOk || !units[i].world)) {
+        if (live[i] != expected[i] && (worldOk || !units[i].world) && (!units[i].story || Story::FromClient())) {
             ops.push_back({ i, expected[i], live[i] });
         }
     }

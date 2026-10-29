@@ -1,3 +1,4 @@
+#include "CoopStory.h"
 #include "CoopPlayerHits.h"
 
 #include <algorithm>
@@ -400,6 +401,11 @@ void ClientFrame(uint32_t now) {
         }
         if (local->stateFlags1 & PLAYER_STATE1_DEAD) {
             Reject(p.msg, "the Link is dead");
+            continue;
+        }
+        // Talking or in a cutscene (and 500 ms after): the host's enemies do not freeze for this game (milestone 6).
+        if (Story::ClientBusy()) {
+            Reject(p.msg, "the Link is talking or in a cutscene");
             continue;
         }
         StartReplay(p, local, used++);
