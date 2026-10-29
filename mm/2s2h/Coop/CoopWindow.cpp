@@ -129,6 +129,13 @@ void CoopWindow::DrawElement() {
             }
             ImGui::EndDisabled();
         }
+        // Milestone 8: the whole shared state again from the host (the detector also asks by itself).
+        if (Coop::IsClientPlayingInSession()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Resync with host")) {
+                Coop::RequestResync("asked from the Coop window");
+            }
+        }
     }
 
     ImGui::Separator();
@@ -149,10 +156,15 @@ void CoopWindow::DrawElement() {
     }
     ImGui::Separator();
     ImGui::Text("Players (%d/%d)", static_cast<int>(snapshot.players.size()), static_cast<int>(Coop::kMaxPlayers));
-    if (ImGui::BeginTable("CoopPlayers", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit)) {
+    const bool hosting = snapshot.role == Coop::Role::Host;
+    if (ImGui::BeginTable("CoopPlayers", hosting ? 4 : 3,
+                          ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("##color");
         ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Ping");
+        if (hosting) {
+            ImGui::TableSetupColumn("##actions");
+        }
         for (const auto& player : snapshot.players) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -168,6 +180,14 @@ void CoopWindow::DrawElement() {
                 ImGui::Text("%d ms", player.rttMs);
             } else {
                 ImGui::TextDisabled("-");
+            }
+            if (hosting) {
+                ImGui::TableNextColumn();
+                // Milestone 8: sends that player back next to the host.
+                if (!player.isHost &&
+                    ImGui::SmallButton(fmt::format("Bring next to me##coopBring{}", player.id).c_str())) {
+                    Coop::BringToHost(player.id);
+                }
             }
         }
         ImGui::EndTable();

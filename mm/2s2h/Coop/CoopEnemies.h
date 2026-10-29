@@ -17,6 +17,8 @@ namespace Coop::Enemies {
 
 // Called once per frame from the coop frame hook.
 void Frame();
+// Host: the enemy manifest goes out again on the next frame (a client's resync, milestone 8).
+void HostResendManifest();
 
 // For hits on enemies (CoopCombat). Host: the live enemy with this netId, or null; the netId of an enemy, or 0.
 Actor* HostEnemyActor(uint16_t netId);

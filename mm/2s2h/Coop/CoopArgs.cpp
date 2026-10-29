@@ -591,7 +591,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             }
         } else if (arg == "--coop-test-reset-cycle" || arg == "--coop-test-force-save" ||
                    arg == "--coop-test-block-songs" || arg == "--coop-test-fuzz-enemies" ||
-                   arg == "--coop-test-bomb-limit" || arg == "--coop-test-give-fairy") {
+                   arg == "--coop-test-bomb-limit" || arg == "--coop-test-give-fairy" || arg == "--coop-test-resync" ||
+                   arg == "--coop-test-bring") {
             const char* value = takeValue();
             int seconds = 0;
             if (value != nullptr && ParseSeconds(value, seconds)) {
@@ -600,6 +601,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
                  : arg == "--coop-test-block-songs" ? options.testBlockSongsAt
                  : arg == "--coop-test-bomb-limit"  ? options.testBombLimitFrom
                  : arg == "--coop-test-give-fairy"  ? options.testGiveFairyAt
+                 : arg == "--coop-test-resync"      ? options.testResyncAt
+                 : arg == "--coop-test-bring"       ? options.testBringAt
                                                     : options.testFuzzEnemiesAt) = seconds;
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not @<seconds>", arg, value));

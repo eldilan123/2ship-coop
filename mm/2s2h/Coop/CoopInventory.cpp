@@ -973,6 +973,10 @@ void Cancel(uint32_t seq) {
     SPDLOG_INFO("[Coop] inv-cancel: seq {} given up here; the host undoes it if it applied it", seq);
 }
 
+void HostResendTo(uint32_t playerId) {
+    sClients[playerId].ackPending = true;
+}
+
 void OnEnteredSession() {
     sAuth = ReadAll();
     sPending.clear();

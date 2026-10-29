@@ -1817,6 +1817,10 @@ void Frame() {
     ClientFrame();
 }
 
+void HostResendManifest() {
+    sManifestRequested = true;
+}
+
 // MARK: - Combat support
 
 Actor* HostEnemyActor(uint16_t netId) {

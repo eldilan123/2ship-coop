@@ -32,6 +32,14 @@ bool HoldingExit();
 // Client: reload the host's scene and arrive next to the host (after the Link died).
 void ClientReturnToHost(const char* why);
 
+// Resync (milestone 8). The client asks the host for the whole shared state again: the host sends a Resync snapshot
+// (the save, the cycle flags), the inventory with the live flags and the enemy manifest; the client takes all of it,
+// drops what it had pending, and follows the host if it is in another scene. At most once every 10 s per client (the
+// host enforces it). The detector asks by itself when a field stays different (CoopShared.cpp).
+void RequestResync(const std::string& why);
+// Host: sends a client back next to the host ("Bring next to me" in the Coop window).
+void BringToHost(uint32_t playerId);
+
 } // namespace Coop
 
 #endif // COOP_SESSION_H

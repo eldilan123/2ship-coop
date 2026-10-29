@@ -50,6 +50,8 @@ void TestFuzz();
 // treasure chest shop sets and clears its chest's flag every game): those flags are each game's own, neither sent
 // nor checked. The overload without a scene asks about the current one.
 bool ChestFlagsAreLocal(int sceneId);
+// Host: the whole state goes to this client on the next frame even if nothing changed (a resync, milestone 8).
+void HostResendTo(uint32_t playerId);
 bool ChestFlagsAreLocal();
 
 } // namespace Coop::Inventory

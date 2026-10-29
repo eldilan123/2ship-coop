@@ -296,6 +296,28 @@ void UpdateClientExit() {
     gPlayState->transitionTrigger = TRANS_TRIGGER_START;
 }
 
+// --coop-test-resync (client) and --coop-test-bring (host): once each, at their second of gameplay (milestone 8).
+void UpdateResyncAndBring() {
+    static bool sResyncDone = false;
+    static bool sBringDone = false;
+    const LaunchOptions& o = GetLaunchOptions();
+    if (!IsHosting() && o.testResyncAt.has_value() && !sResyncDone && IsClientPlayingInSession() &&
+        GameplaySeconds() >= *o.testResyncAt) {
+        sResyncDone = true;
+        SPDLOG_INFO("[Coop] TEST: asking the host for a resync");
+        RequestResync("--coop-test-resync");
+    }
+    if (IsHosting() && o.testBringAt.has_value() && !sBringDone && GameplaySeconds() >= *o.testBringAt) {
+        sBringDone = true;
+        for (const PlayerInfo& p : GetSnapshot().players) {
+            if (!p.isHost) {
+                SPDLOG_INFO("[Coop] TEST: bringing player {} next to the host", p.id);
+                BringToHost(p.id);
+            }
+        }
+    }
+}
+
 // --coop-test-block-songs: leaves msgMode exactly as Message_Update does when the player answers "Yes" to the Song of
 // Time and then to an owl statue. It runs at the end of the frame, so the coop frame hook sees it first next frame.
 void OnGameStateMainFinish() {
@@ -1043,6 +1065,7 @@ void Frame() {
     } else {
         UpdateForceSave();
     }
+    UpdateResyncAndBring();
     UpdateLocalChanges();
     UpdateEnemyTests();
     UpdateAttacks();

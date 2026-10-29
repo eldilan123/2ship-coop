@@ -22,6 +22,7 @@ enum class Reason : uint16_t {
     Scene = 2,    // Host arrived in a new scene
     Cycle = 3,    // Host reset the 3-day cycle
     TimeJump = 4, // Host's clock jumped; the clock message with the jump follows right after
+    Resync = 5,   // A client asked for the whole state again (milestone 8); the inventory comes with it
 };
 const char* ReasonName(uint16_t reason);
 

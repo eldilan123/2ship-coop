@@ -60,6 +60,8 @@ const char* ReasonName(uint16_t reason) {
             return "cycle";
         case Reason::TimeJump:
             return "time jump";
+        case Reason::Resync:
+            return "resync";
     }
     return "unknown";
 }

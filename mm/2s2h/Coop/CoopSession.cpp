@@ -3,14 +3,17 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
+#include <unordered_map>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopEnemies.h"
 #include "CoopInventory.h"
 #include "CoopPlayerSync.h"
 #include "CoopSaveGuard.h"
+#include "CoopShared.h"
 #include "CoopSnapshot.h"
 #include "2s2h/BenGui/Notification.h"
 #include "2s2h/BenGui/BenGui.hpp"
@@ -225,6 +228,21 @@ void ClientOnSnapshot(uint32_t, const std::vector<uint8_t>& bytes) {
 
     sLastSnapshotSeq = h.seq;
     sLastHost = h;
+    if (h.reason == static_cast<uint16_t>(Snapshot::Reason::Resync)) {
+        // Everything is the host's again: the save as sent (inventory included), nothing pending here; the live flags
+        // come with the inv_state the host sends right after.
+        Snapshot::ApplyShared(snapshot, false);
+        Inventory::OnEnteredSession();
+        Shared::OnResynced();
+        SPDLOG_INFO("[Coop] resync: applied snapshot #{}: host scene {} entrance 0x{:04X} room {}", h.seq, h.sceneId,
+                    static_cast<uint16_t>(h.entrance), h.roomNum);
+        Notify("Coop: resincronizado con el host");
+        if (gPlayState == nullptr || h.sceneId != gPlayState->sceneId ||
+            h.sceneLayer != static_cast<int8_t>(gSaveContext.sceneLayer)) {
+            sPending = { true, h.entrance, h.sceneLayer, h.sceneId, h.seq, false, std::chrono::steady_clock::now() };
+        }
+        return;
+    }
     // The shared inventory comes with inv_state now: the snapshot leaves it as it is.
     Inventory::BeforeSnapshot();
     Snapshot::ApplyShared(snapshot, false);
@@ -557,6 +575,37 @@ void OnPlayDestroy() {
     }
 }
 
+// MARK: - Resync and "bring next to me" (milestone 8)
+
+constexpr auto kResyncMinInterval = std::chrono::seconds(10);
+std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sLastResyncFor; // Host, per client
+
+void HostOnResyncRequest(uint32_t from, const nlohmann::json& message) {
+    if (!IsHosting() || !InGameplay()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto last = sLastResyncFor.find(from);
+    if (last != sLastResyncFor.end() && now - last->second < kResyncMinInterval) {
+        SPDLOG_INFO("[Coop] resync: player {} asked again too soon; ignored", from);
+        return;
+    }
+    sLastResyncFor[from] = now;
+    SPDLOG_INFO("[Coop] resync: player {} asked ({}); sending the whole state", from,
+                Protocol::GetString(message, "why", "no reason given"));
+    HostSendSnapshot(Snapshot::Reason::Resync, from);
+    Inventory::HostResendTo(from);
+    Enemies::HostResendManifest();
+}
+
+void ClientOnBringToHost(uint32_t, const nlohmann::json&) {
+    if (IsHosting() || sStage != ClientStage::InSession) {
+        return;
+    }
+    Notify("Coop: el host te trajo a su lado");
+    ClientReturnToHost("the host brought this player");
+}
+
 // Decision (e): a client that loses the session sees why and goes back to the title screen without saving.
 void ClientLeaveSession(const std::string& reason) {
     SPDLOG_WARN("[Coop] Session lost ({}). Returning to the title screen without saving.", reason);
@@ -590,6 +639,8 @@ void RegisterSessionHooks() {
     RegisterJsonHandler("scene_denied", ClientOnSceneDenied);
     RegisterJsonHandler("enter_request", HostOnEnterRequest);
     RegisterJsonHandler("enter_denied", ClientOnEnterDenied);
+    RegisterJsonHandler("resync_request", HostOnResyncRequest);
+    RegisterJsonHandler("bring_to_host", ClientOnBringToHost);
     RegisterBinaryHandler(Protocol::kChannelSnapshot, ClientOnSnapshot);
 }
 
@@ -617,6 +668,25 @@ void RequestEnterSession() {
 
 bool IsClientInSession() {
     return sStage == ClientStage::Entering || sStage == ClientStage::InSession;
+}
+
+void RequestResync(const std::string& why) {
+    static auto sLast = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (IsHosting() || sStage != ClientStage::InSession || now - sLast < kResyncMinInterval) {
+        return;
+    }
+    sLast = now;
+    SPDLOG_INFO("[Coop] resync: asking the host for the whole state ({})", why);
+    SendJson(kHostPlayerId, { { "type", "resync_request" }, { "why", why } });
+}
+
+void BringToHost(uint32_t playerId) {
+    if (!IsHosting()) {
+        return;
+    }
+    SPDLOG_INFO("[Coop] bring: sending player {} back next to the host", playerId);
+    SendJson(playerId, { { "type", "bring_to_host" } });
 }
 
 bool IsClientPlayingInSession() {

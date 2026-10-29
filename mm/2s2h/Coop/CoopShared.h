@@ -19,6 +19,10 @@ namespace Coop::Shared {
 // Called once per frame from the coop frame hook.
 void Frame();
 
+// Client: a resync was applied (milestone 8): every field starts over. A field that stays different for 3 checks
+// (6 s) asks for a resync by itself, at most once every 30 s (auto-resync in shared-stats).
+void OnResynced();
+
 // Test only (host): sends malformed shared_check messages to the clients.
 void TestFuzz();
 

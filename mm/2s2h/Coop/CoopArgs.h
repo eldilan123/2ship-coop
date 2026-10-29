@@ -41,6 +41,10 @@ struct LaunchOptions {
     std::optional<int> testForceSaveAt;
     // Client: seconds after entering the session to simulate answering "Yes" to the Song of Time and an owl statue
     std::optional<int> testBlockSongsAt;
+    // Client: ask the host for a resync at these seconds after reaching gameplay (milestone 8)
+    std::optional<int> testResyncAt;
+    // Host: send every client back next to the host at these seconds after reaching gameplay (milestone 8)
+    std::optional<int> testBringAt;
     // Client: walk into an exit to this entrance (hex) at these seconds after entering the session
     std::vector<TimedValue> testClientExit;
     // Both: change the local Link at these seconds after reaching gameplay (forms: PlayerTransformation numbers)

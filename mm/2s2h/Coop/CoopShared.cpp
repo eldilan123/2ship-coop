@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include "Coop.h"
 #include "CoopInventory.h"
@@ -235,6 +236,10 @@ int sDesyncs[3] = {};
 int sChecks = 0;
 int sChecksSkippedWorld = 0;
 int64_t sNextStatsMs = 0;
+int64_t sLastAutoResyncMs = 0;
+int sAutoResyncs = 0;
+constexpr int64_t kAutoResyncEveryMs = 30000;
+constexpr int kAutoResyncChecks = 3;
 
 void Drop(const char* why) {
     SPDLOG_WARN("[Coop] Dropping shared_check: {}", why);
@@ -299,6 +304,12 @@ void ClientOnSharedCheck(uint32_t from, const nlohmann::json& m) {
             SPDLOG_WARN("[Coop] {}: {} differs from the host (for {} ms, check {})", GroupCounter(fields[i].group),
                         fields[i].name, now - st.differentSinceMs, m["seq"].get<uint64_t>());
         }
+        // Milestone 8: still different a check later, it does not fix itself: the whole state is asked for again.
+        if (st.checksDifferent >= kAutoResyncChecks && now - sLastAutoResyncMs >= kAutoResyncEveryMs) {
+            sLastAutoResyncMs = now;
+            sAutoResyncs++;
+            RequestResync(fmt::format("auto: {} different for {} ms", fields[i].name, now - st.differentSinceMs));
+        }
     }
 }
 
@@ -331,9 +342,9 @@ void LogStats(int64_t now) {
         }
     }
     SPDLOG_INFO("[Coop] shared-stats: inv-desync {} (open {}), flag-desync {} (open {}), world-desync {} (open {}), "
-                "b-save-write {}; checks {} (live flags skipped in {}: another scene or room)",
+                "b-save-write {}; checks {} (live flags skipped in {}: another scene or room); auto-resync {}",
                 sDesyncs[0], open[0], sDesyncs[1], open[1], sDesyncs[2], open[2], SaveWritesWhileClient(), sChecks,
-                sChecksSkippedWorld);
+                sChecksSkippedWorld, sAutoResyncs);
 }
 
 void RegisterSharedHooks() {
@@ -352,6 +363,10 @@ void Frame() {
         HostFrame(now);
     }
     LogStats(now);
+}
+
+void OnResynced() {
+    sState.clear();
 }
 
 void TestFuzz() {
