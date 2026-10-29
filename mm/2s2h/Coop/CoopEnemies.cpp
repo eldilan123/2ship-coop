@@ -1932,6 +1932,13 @@ void TestSpawn(int16_t actorId, uint16_t params, int index) {
                 pos.y, pos.z);
 }
 
+Actor* SpawnLike(int16_t actorId, const Vec3f& pos, const Vec3s& rot, uint16_t params) {
+    if (gPlayState == nullptr || gActorOverlayTable[actorId].profile == nullptr) {
+        return nullptr;
+    }
+    return SpawnUnchecked(actorId, pos, rot, params, 0);
+}
+
 Actor* TestSpawnAt(int16_t actorId, const Vec3f& pos, s16 yaw, uint16_t params) {
     if (!InGameplay() || gActorOverlayTable[actorId].profile == nullptr) {
         return nullptr;

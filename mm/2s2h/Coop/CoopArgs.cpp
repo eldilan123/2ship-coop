@@ -297,11 +297,13 @@ bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
         number = flag;
     } else if (kind == "switch") {
         ok = ParseInt(value.c_str(), 0, 0x7F, number);
-    } else if (kind == "chest" || kind == "drop") {
+    } else if (kind == "chest" || kind == "drop" || kind == "pot" || kind == "rock") {
         ok = ParseHex16(value.c_str(), flag);
         number = flag;
     } else if (kind == "use") {
         ok = ParseInt(value.c_str(), 0, 0xFF, number);
+    } else if (kind == "break") {
+        ok = ParseInt(value.c_str(), 0, 1, number);
     } else if (kind == "open" || kind == "pick") {
         ok = ParseInt(value.c_str(), 0, 0, number);
     }

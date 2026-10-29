@@ -123,8 +123,9 @@ struct LaunchOptions {
     // (Item_Give), "rupees:<n>" (Rupees_ChangeBy, n may be negative), "week:<hex packed flag>" (SET_WEEKEVENTREG),
     // "switch:<flag>" (Flags_SetSwitch in the current scene), "chest:<hex params>" (an En_Box 150 units along +z of the
     // Link, facing it), "drop:<hex params>" (an En_Item00 150 units along -z), "open:0" (the Link in front of the
-    // nearest chest, pressing A), "pick:0" (the Link onto the nearest collectible), "use:<item>" (one of its ammo
-    // spent, Inventory_ChangeAmmo). "@w<unix ms>" instead of
+    // nearest chest, pressing A), "pick:0" (the Link onto the nearest collectible), "pot:<hex params>" (an Obj_Tsubo
+    // 150 units along +x), "rock:<hex params>" (an Obj_Bombiwa 150 units along -x), "break:0" (the nearest pot broken,
+    // Actor_Kill), "use:<item>" (one of its ammo spent, Inventory_ChangeAmmo). "@w<unix ms>" instead of
     // "@<seconds>": at that wall-clock time (two games changing together)
     struct TimedChange {
         std::string kind;

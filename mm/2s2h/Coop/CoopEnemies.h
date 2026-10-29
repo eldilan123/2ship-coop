@@ -38,6 +38,8 @@ Actor* NearestEnemy(const Vec3f& from, bool testFirst = true);
 
 // Test only (host): spawns an enemy in front of the local Link. `index` spreads several spawns made at once.
 void TestSpawn(int16_t actorId, uint16_t params, int index);
+// Host or client: spawns an actor like a room spawn would (its object loaded even if the scene does not list it).
+Actor* SpawnLike(int16_t actorId, const Vec3f& pos, const Vec3s& rot, uint16_t params);
 // Test only (host or client): spawns any actor at `pos`, its object loaded even if the scene does not list it.
 Actor* TestSpawnAt(int16_t actorId, const Vec3f& pos, s16 yaw, uint16_t params);
 // Test only (host): kills the enemy with this netId (-1: the newest one still alive; -2: every enemy spawned at

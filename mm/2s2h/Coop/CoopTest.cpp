@@ -15,6 +15,7 @@
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
 #include "CoopInventory.h"
+#include "CoopWorld.h"
 #include "CoopPlayerHits.h"
 #include "CoopProjectiles.h"
 #include "CoopRooms.h"
@@ -401,6 +402,7 @@ void UpdateEnemyTests() {
         Rooms::TestFuzz();
         Shared::TestFuzz();
         Inventory::TestFuzz();
+        World::TestFuzz();
     }
 }
 
@@ -605,15 +607,45 @@ void UpdateChanges() {
         Flags_SetSwitch(gPlayState, c.value);
     } else if (c.kind == "use") {
         Inventory_ChangeAmmo(static_cast<s16>(c.value), -1);
-    } else if (c.kind == "chest" || c.kind == "drop") {
+    } else if (c.kind == "chest" || c.kind == "drop" || c.kind == "pot" || c.kind == "rock") {
+        // Each kind at its own side of the Link, so they do not land on each other.
+        struct Spawn {
+            const char* kind;
+            s16 id;
+            const char* name;
+            float dx, dz;
+        };
+        static const Spawn kSpawns[] = { { "chest", ACTOR_EN_BOX, "En_Box", 0, 150 },
+                                         { "drop", ACTOR_EN_ITEM00, "En_Item00", 0, -150 },
+                                         { "pot", ACTOR_OBJ_TSUBO, "Obj_Tsubo", 150, 0 },
+                                         { "rock", ACTOR_OBJ_BOMBIWA, "Obj_Bombiwa", -150, 0 } };
+        const Spawn* s = &kSpawns[0];
+        for (const Spawn& k : kSpawns) {
+            if (c.kind == k.kind) {
+                s = &k;
+            }
+        }
         Player* link = GET_PLAYER(gPlayState);
-        const float dz = c.kind == "chest" ? 150.0f : -150.0f;
-        const Vec3f at = { link->actor.world.pos.x, link->actor.world.pos.y, link->actor.world.pos.z + dz };
-        const Actor* a = Enemies::TestSpawnAt(c.kind == "chest" ? ACTOR_EN_BOX : ACTOR_EN_ITEM00, at,
-                                              static_cast<s16>(0x8000), static_cast<uint16_t>(c.value));
+        const Vec3f at = { link->actor.world.pos.x + s->dx, link->actor.world.pos.y, link->actor.world.pos.z + s->dz };
+        const Actor* a = Enemies::TestSpawnAt(s->id, at, static_cast<s16>(0x8000), static_cast<uint16_t>(c.value));
         SPDLOG_INFO("[Coop] TEST: {} {} params 0x{:04X} at ({:.0f}, {:.0f}, {:.0f})",
-                    a != nullptr ? "spawned" : "could not spawn", c.kind == "chest" ? "En_Box" : "En_Item00", c.value,
-                    at.x, at.y, at.z);
+                    a != nullptr ? "spawned" : "could not spawn", s->name, c.value, at.x, at.y, at.z);
+    } else if (c.kind == "break") {
+        Player* link = GET_PLAYER(gPlayState);
+        Actor* nearest = nullptr;
+        // break:0 the nearest pot, break:1 the nearest bush or grass (En_Kusa).
+        const s16 breakId = c.value == 1 ? ACTOR_EN_KUSA : ACTOR_OBJ_TSUBO;
+        for (Actor* a = gPlayState->actorCtx.actorLists[ACTORCAT_PROP].first; a != nullptr; a = a->next) {
+            if (a->id == breakId && a->update != nullptr &&
+                (nearest == nullptr ||
+                 Actor_WorldDistXZToActor(&link->actor, a) < Actor_WorldDistXZToActor(&link->actor, nearest))) {
+                nearest = a;
+            }
+        }
+        SPDLOG_INFO("[Coop] TEST: change break: {}", nearest != nullptr ? "the nearest one" : "nothing to break");
+        if (nearest != nullptr) {
+            Actor_Kill(nearest);
+        }
     } else if (c.kind == "open" || c.kind == "pick") {
         const s16 id = c.kind == "open" ? ACTOR_EN_BOX : ACTOR_EN_ITEM00;
         Player* link = GET_PLAYER(gPlayState);

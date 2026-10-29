@@ -11,6 +11,7 @@
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
 #include "CoopSession.h"
+#include "CoopWorld.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
 #include "2s2h/ShipInit.hpp"
 
@@ -156,6 +157,40 @@ const std::vector<Unit>& Units() {
                       [](int, int64_t v) {
                           if (gPlayState != nullptr) {
                               gPlayState->actorCtx.sceneFlags.chest = static_cast<u32>(v);
+                          }
+                      },
+                      0, -1, true });
+        // Switches and room clears (phase 2): bits, both games can set and clear them; the other game's objects react
+        // (CoopWorld.cpp).
+        for (int i = 0; i < ARRAY_COUNT(gPlayState->actorCtx.sceneFlags.switches); i++) {
+            u.push_back({ fmt::format("live switch flags 0x{:02X}-0x{:02X}", i * 32, i * 32 + 31), Kind::Bits, 0,
+                          0xFFFFFFFFll,
+                          [](int k) -> int64_t {
+                              return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.switches[k] : 0;
+                          },
+                          [](int k, int64_t v) {
+                              if (gPlayState != nullptr) {
+                                  gPlayState->actorCtx.sceneFlags.switches[k] = static_cast<u32>(v);
+                              }
+                          },
+                          i, -1, true });
+        }
+        u.push_back(
+            { "live room clear flags", Kind::Bits, 0, 0xFFFFFFFFll,
+              [](int) -> int64_t { return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.clearedRoom : 0; },
+              [](int, int64_t v) {
+                  if (gPlayState != nullptr) {
+                      gPlayState->actorCtx.sceneFlags.clearedRoom = static_cast<u32>(v);
+                  }
+              },
+              0, -1, true });
+        u.push_back({ "live room clear flags (temporary)", Kind::Bits, 0, 0xFFFFFFFFll,
+                      [](int) -> int64_t {
+                          return gPlayState != nullptr ? gPlayState->actorCtx.sceneFlags.clearedRoomTemp : 0;
+                      },
+                      [](int, int64_t v) {
+                          if (gPlayState != nullptr) {
+                              gPlayState->actorCtx.sceneFlags.clearedRoomTemp = static_cast<u32>(v);
                           }
                       },
                       0, -1, true });
@@ -314,6 +349,10 @@ void WriteAll(const std::vector<int64_t>& values, bool withWorld) {
             continue;
         }
         units[i].set(units[i].index, values[i]);
+        if (units[i].world && units[i].name.rfind("live switch flags", 0) == 0) {
+            World::OnRemoteSwitchFlags(units[i].index, static_cast<u32>(values[i] & ~live[i]),
+                                       static_cast<u32>(live[i] & ~values[i]));
+        }
         if (units[i].world && units[i].name.rfind("live collectible", 0) == 0) {
             KillCollectibles(units[i].index, static_cast<u32>(values[i] & ~live[i]));
         }
