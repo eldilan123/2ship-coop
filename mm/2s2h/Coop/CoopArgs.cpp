@@ -304,6 +304,8 @@ bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
         ok = ParseInt(value.c_str(), 0, 0xFF, number);
     } else if (kind == "sot") {
         ok = ParseInt(value.c_str(), 0, 0, number);
+    } else if (kind == "cycle") {
+        ok = ParseInt(value.c_str(), 0, 2, number);
     } else if (kind == "break") {
         ok = ParseInt(value.c_str(), 0, 1, number);
     } else if (kind == "open" || kind == "pick") {
@@ -364,6 +366,8 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             setRole(Role::Host);
         } else if (arg == "--coop-test-enter") {
             options.testEnter = true;
+        } else if (arg == "--coop-test-cycle-accept") {
+            options.testCycleAccept = true;
         } else if (arg == "--coop-test-clock-log") {
             options.testClockLog = true;
         } else if (arg == "--coop-test-host-refuse-exits") {

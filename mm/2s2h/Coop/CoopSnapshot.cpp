@@ -159,6 +159,10 @@ void ApplyShared(const Parsed& snapshot, bool firstTime) {
     const s32 eventDayCount = gSaveContext.save.eventDayCount;
     const s32 isNight = gSaveContext.save.isNight;
     const s32 timeSpeedOffset = gSaveContext.save.timeSpeedOffset;
+    // The cutscene of the scene this game is in (or loading): the host's belongs to the host's scene. Taken from the
+    // host while the client is still in another scene, its scripted cutscene would start here (a Song of Time reset
+    // sends 0xFFF7 and Termina Field has no such script: the client crashed in Cutscene_ProcessScript).
+    const s32 cutsceneIndex = gSaveContext.save.cutsceneIndex;
 
     std::memcpy(&gSaveContext.save, snapshot.save, sizeof(gSaveContext.save));
     std::memcpy(gSaveContext.cycleSceneFlags, snapshot.cycleSceneFlags, sizeof(gSaveContext.cycleSceneFlags));
@@ -176,6 +180,7 @@ void ApplyShared(const Parsed& snapshot, bool firstTime) {
         gSaveContext.save.eventDayCount = eventDayCount;
         gSaveContext.save.isNight = isNight;
         gSaveContext.save.timeSpeedOffset = timeSpeedOffset;
+        gSaveContext.save.cutsceneIndex = cutsceneIndex;
     }
 }
 

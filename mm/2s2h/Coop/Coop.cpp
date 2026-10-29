@@ -12,6 +12,7 @@
 #include "CoopClientDeath.h"
 #include "CoopClock.h"
 #include "CoopCutscene.h"
+#include "CoopCycle.h"
 #include "CoopCombat.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyHealth.h"
@@ -152,6 +153,7 @@ void OnFrame() {
     Pause::Frame();
     Cutscene::Frame();
     Bosses::Frame();
+    Cycle::Frame();
     // Before the puppets: a puppet whose room is not loaded here is not shown.
     Rooms::Frame();
     Puppet::Frame();

@@ -11,9 +11,9 @@
 //    that the interface, the Link or the message system read (CoopStory.cpp has each one with its reason).
 //  - kBlocked: NPCs that hold state only one game can run (minigames, races, Anju and Kafei, the robbery). The client
 //    cannot talk to them yet: the dialogue closes with a notice and story-blocked counts it (milestone 7).
-//  - The Song of Time (and the inverted and double ones), the owl's save and flight, and the NPCs that skip time are
-//  the
-//    host's: on the client they stop with "solo el host" and story-host-only counts it (milestone 8: ask the host).
+//  - The Song of Time (and the inverted and double ones) asks the host (CoopCycle.cpp, milestone 8). The owl's save
+//    and flight and the NPCs that skip time are the host's: on the client they stop with "solo el host" and
+//    story-host-only counts it.
 //  - A cutscene the client starts runs on the client; what it writes reaches the host. cutscene-from-b counts them.
 //  - While the client's Link talks, is in a cutscene or in the pause menu (and 500 ms after), it takes no hits from the
 //    host's enemies.

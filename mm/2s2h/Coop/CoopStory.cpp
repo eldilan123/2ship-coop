@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "Coop.h"
+#include "CoopCycle.h"
 #include "CoopRooms.h"
 #include "CoopSession.h"
 #include "2s2h/BenGui/Notification.h"
@@ -151,9 +152,12 @@ void ClientFrame() {
     const u16 mode = msg.ocarinaMode;
     if (mode == OCARINA_MODE_PROCESS_SOT || mode == OCARINA_MODE_PROCESS_INVERTED_TIME ||
         mode == OCARINA_MODE_PROCESS_DOUBLE_TIME) {
+        // Milestone 8: the host is asked instead (CoopCycle.cpp); its question does not open here.
         msg.ocarinaMode = OCARINA_MODE_END;
         Message_CloseTextbox(play);
-        HostOnly("cambiar el tiempo con la ocarina");
+        Cycle::ClientRequest(mode == OCARINA_MODE_PROCESS_SOT             ? Cycle::Kind::SongOfTime
+                             : mode == OCARINA_MODE_PROCESS_INVERTED_TIME ? Cycle::Kind::Inverted
+                                                                          : Cycle::Kind::Double);
     } else if (mode == OCARINA_MODE_WARP ||
                (mode >= OCARINA_MODE_WARP_TO_GREAT_BAY_COAST && mode <= OCARINA_MODE_WARP_TO_ENTRANCE)) {
         msg.ocarinaMode = OCARINA_MODE_END;

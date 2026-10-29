@@ -533,8 +533,16 @@ void HostOnInvEvent(uint32_t from, const nlohmann::json& m) {
     // All or nothing: check every op against the host's values, then write.
     std::vector<int64_t> values = ReadAll();
     std::string reject;
+    // Milestone 8: a change made in the previous cycle (sent before the client got the cycle snapshot) is dropped.
+    const u16 cycle = gSaveContext.save.saveInfo.playerData.threeDayResetCount;
+    if (m.contains("cycle") && m["cycle"].is_number_integer() && m["cycle"].get<int64_t>() != cycle) {
+        reject = fmt::format("made in cycle {}, the host is in cycle {}", m["cycle"].get<int64_t>(), cycle);
+    }
     std::vector<std::string> overdraws;
     for (const Op& op : ops) {
+        if (!reject.empty()) {
+            break;
+        }
         const Unit& u = units[op.unit];
         const int64_t cur = values[op.unit];
         if (u.kind == Kind::Claim && (cur & op.to & ~op.from) != 0) {
@@ -764,7 +772,11 @@ uint32_t ClientCapture() {
             }
         }
     }
-    SendJson(kHostPlayerId, { { "type", "inv_event" }, { "seq", seq }, { "scene", sAuthScene }, { "ops", j } });
+    SendJson(kHostPlayerId, { { "type", "inv_event" },
+                              { "seq", seq },
+                              { "scene", sAuthScene },
+                              { "cycle", gSaveContext.save.saveInfo.playerData.threeDayResetCount },
+                              { "ops", j } });
     SPDLOG_INFO("[Coop] inv-event: seq {} sent: {}", seq, Describe(ops));
     sPending.push_back({ seq, std::move(ops) });
     sSent++;

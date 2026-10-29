@@ -21,6 +21,7 @@ struct LaunchOptions {
     int quitAfterSeconds = 0;
     int silenceAfterSeconds = 0;
     bool testEnter = false;           // Client: press "Enter session" automatically once connected
+    bool testCycleAccept = false;     // Host: accept every cycle request once free; its save file is not written
     bool testClockLog = false;        // Both: log a clock sample every second while in gameplay
     bool testHostRefuseExits = false; // Host: refuse every scene_request (tests the client timeout)
     bool testPuppetLog = false;       // Both: log the local Link and every puppet once per second

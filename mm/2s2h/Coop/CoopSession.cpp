@@ -9,6 +9,7 @@
 #include "Coop.h"
 #include "CoopArgs.h"
 #include "CoopClock.h"
+#include "CoopCycle.h"
 #include "CoopEnemies.h"
 #include "CoopInventory.h"
 #include "CoopPlayerSync.h"
@@ -228,15 +229,20 @@ void ClientOnSnapshot(uint32_t, const std::vector<uint8_t>& bytes) {
 
     sLastSnapshotSeq = h.seq;
     sLastHost = h;
-    if (h.reason == static_cast<uint16_t>(Snapshot::Reason::Resync)) {
+    const bool cycle = h.reason == static_cast<uint16_t>(Snapshot::Reason::Cycle);
+    if (h.reason == static_cast<uint16_t>(Snapshot::Reason::Resync) || cycle) {
         // Everything is the host's again: the save as sent (inventory included), nothing pending here; the live flags
         // come with the inv_state the host sends right after.
         Snapshot::ApplyShared(snapshot, false);
         Inventory::OnEnteredSession();
         Shared::OnResynced();
-        SPDLOG_INFO("[Coop] resync: applied snapshot #{}: host scene {} entrance 0x{:04X} room {}", h.seq, h.sceneId,
-                    static_cast<uint16_t>(h.entrance), h.roomNum);
-        Notify("Coop: resincronizado con el host");
+        SPDLOG_INFO("[Coop] {}: applied snapshot #{}: host scene {} entrance 0x{:04X} room {}",
+                    cycle ? "cycle" : "resync", h.seq, h.sceneId, static_cast<uint16_t>(h.entrance), h.roomNum);
+        if (cycle) {
+            Cycle::ClientEndOfCycle(); // Milestone 8: a new cycle drops this game's own leftovers
+        } else {
+            Notify("Coop: resincronizado con el host");
+        }
         if (gPlayState == nullptr || h.sceneId != gPlayState->sceneId ||
             h.sceneLayer != static_cast<int8_t>(gSaveContext.sceneLayer)) {
             sPending = { true, h.entrance, h.sceneLayer, h.sceneId, h.seq, false, std::chrono::steady_clock::now() };

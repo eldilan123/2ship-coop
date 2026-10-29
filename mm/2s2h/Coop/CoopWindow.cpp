@@ -9,6 +9,7 @@
 #include <ship/window/Window.h>
 #include <ship/window/gui/Gui.h>
 #include "Coop.h"
+#include "CoopCycle.h"
 #include "CoopSession.h"
 #include "2s2h/BenGui/BenMenu.h"
 #include "2s2h/ShipInit.hpp"
@@ -150,6 +151,32 @@ void CoopWindow::DrawElement() {
         ImGui::TextUnformatted(sessionStatus.c_str());
     }
     ImGui::PopTextWrapPos();
+
+    // Milestone 8: a player asks to change the time (Song of Time and its inverted and double forms).
+    if (snapshot.role == Coop::Role::Host) {
+        const std::vector<Coop::Cycle::PendingRequest> requests = Coop::Cycle::HostPending();
+        const char* busy = Coop::Cycle::HostBusyReason();
+        for (const Coop::Cycle::PendingRequest& r : requests) {
+            ImGui::Separator();
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.3f, 1.0f), "%s asks to: %s (%d s left)", r.name.c_str(),
+                               r.what.c_str(), r.secondsLeft);
+            ImGui::PopTextWrapPos();
+            ImGui::BeginDisabled(busy != nullptr);
+            if (ImGui::Button(fmt::format("Accept##coopCycle{}", r.playerId).c_str())) {
+                Coop::Cycle::HostAnswer(r.playerId, true);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button(fmt::format("Decline##coopCycle{}", r.playerId).c_str())) {
+                Coop::Cycle::HostAnswer(r.playerId, false);
+            }
+            if (busy != nullptr) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%s)", busy);
+            }
+        }
+    }
 
     if (snapshot.players.empty()) {
         return;

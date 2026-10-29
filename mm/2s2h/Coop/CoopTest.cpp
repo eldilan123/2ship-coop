@@ -12,6 +12,7 @@
 #include "CoopArgs.h"
 #include "CoopClock.h"
 #include "CoopCombat.h"
+#include "CoopCycle.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
 #include "CoopInventory.h"
@@ -297,6 +298,26 @@ void UpdateClientExit() {
 }
 
 // --coop-test-resync (client) and --coop-test-bring (host): once each, at their second of gameplay (milestone 8).
+// --coop-test-cycle-accept (host): accepts a cycle request as soon as the host is free; its save file is never
+// written in that run.
+void UpdateCycleAccept() {
+    static bool sSuppressed = false;
+    if (!IsHosting() || !GetLaunchOptions().testCycleAccept) {
+        return;
+    }
+    if (!sSuppressed) {
+        sSuppressed = true;
+        SetTestSaveSuppression("--coop-test-cycle-accept: the host's save file is not written");
+    }
+    if (Cycle::HostBusyReason() != nullptr) {
+        return;
+    }
+    for (const Cycle::PendingRequest& r : Cycle::HostPending()) {
+        SPDLOG_INFO("[Coop] TEST: the host accepts player {}'s request ({})", r.playerId, r.what);
+        Cycle::HostAnswer(r.playerId, true);
+    }
+}
+
 void UpdateResyncAndBring() {
     static bool sResyncDone = false;
     static bool sBringDone = false;
@@ -630,6 +651,9 @@ void UpdateChanges() {
     } else if (c.kind == "sot") {
         // As if the Song of Time was just played (z_message.c sets this mode and opens its question).
         gPlayState->msgCtx.ocarinaMode = OCARINA_MODE_PROCESS_SOT;
+    } else if (c.kind == "cycle") {
+        // Milestone 8: as if the client played the song (0: Song of Time, 1: inverted, 2: double).
+        Cycle::ClientRequest(static_cast<Cycle::Kind>(c.value));
     } else if (c.kind == "use") {
         Inventory_ChangeAmmo(static_cast<s16>(c.value), -1);
     } else if (c.kind == "chest" || c.kind == "drop" || c.kind == "pot" || c.kind == "rock") {
@@ -1066,6 +1090,7 @@ void Frame() {
         UpdateForceSave();
     }
     UpdateResyncAndBring();
+    UpdateCycleAccept();
     UpdateLocalChanges();
     UpdateEnemyTests();
     UpdateAttacks();
