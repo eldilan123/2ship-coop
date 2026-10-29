@@ -60,15 +60,15 @@ bool IsInvasionPart(const Actor* a) {
 // shooting galleries (En_Syateki_Man: each game runs its own targets and score, Enemies::LocalOnly and
 // Inventory::ChestFlagsAreLocal; the records are shared), the swordsman's school (En_Kendo_Js: its logs are props,
 // its "playing" bit is local) and the treasure chest shop (En_Takaraya: each game builds its own maze; the chest flag
-// it sets and clears is local, the switch flags that remember each form's prize are shared).
+// it sets and clears is local, the switch flags that remember each form's prize are shared), Honey & Darling (En_Fu:
+// its targets and baskets are each game's BG actors; a round's start clears that game's explosives, the other
+// player's copies too) and Grog (En_Hs: the chicks are each game's props and follow that game's Link).
 struct Blocked {
     s16 id;
     const char* reason;
 };
 constexpr Blocked kBlocked[] = {
-    { ACTOR_EN_FU, "Honey & Darling: the minigame lives in one game" },
     { ACTOR_EN_AOB_01, "dog race: the race lives in one game" },
-    { ACTOR_EN_HS, "Grog's chicks: the chicks follow one Link" },
     { ACTOR_EN_DNO, "Deku Butler's race: the race reads the butler's position" },
     { ACTOR_EN_AN, "Anju: her schedule and events (with Kafei) live in one game" },
     { ACTOR_EN_TEST3, "Kafei: his schedule and events live in one game" },
