@@ -44,7 +44,8 @@ const char* TypeDescription(int16_t actorId);
 // `withParent`: the host spawned it from another enemy and the client has that enemy's puppet.
 bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why);
 // Enemy types each game runs on its own, never synced (milestone 7): the shooting galleries' targets, so the client
-// can play a gallery in its own game (its keeper spawns them).
+// can play a gallery in its own game (its keeper spawns them), and the dogs (En_Dg, ENEMY though harmless: the dog
+// race's pen dogs are picked up by that game's Link; the town's dogs are each game's too).
 bool LocalOnly(int16_t actorId);
 
 } // namespace Coop::Enemies

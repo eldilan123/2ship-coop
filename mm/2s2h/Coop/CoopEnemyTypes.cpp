@@ -303,7 +303,7 @@ const char* TypeDescription(int16_t actorId) {
 
 bool LocalOnly(int16_t actorId) {
     return actorId == ACTOR_EN_SYATEKI_CROW || actorId == ACTOR_EN_SYATEKI_WF || actorId == ACTOR_EN_SYATEKI_DEKUNUTS ||
-           actorId == ACTOR_EN_SYATEKI_OKUTA;
+           actorId == ACTOR_EN_SYATEKI_OKUTA || actorId == ACTOR_EN_DG;
 }
 
 bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why) {
