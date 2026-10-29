@@ -339,7 +339,7 @@ void OnShouldActorUpdate(Actor* actor, bool*) {
     if (sView.enemy != nullptr) {
         RestoreLeftover("the next actor's update");
     }
-    if (!Steered(actor) || !Active() || Enemies::LocalOnly(actor->id)) {
+    if (!Steered(actor) || !Active() || Enemies::LocalOnly(actor)) {
         return;
     }
     TargetState& t = sTargets[actor];

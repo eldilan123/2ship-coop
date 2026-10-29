@@ -315,15 +315,21 @@ bool SyncedBoss(int16_t actorId) {
         case ACTOR_BOSS_04:      // Wart
         case ACTOR_BOSS_05:      // Bio Deku Baba
         case ACTOR_BOSS_06:      // Igos du Ikana's window
+        case ACTOR_BOSS_07:      // Majora: its mask, incarnation, wrath, remains and projectiles
             return true;
         default:
             return false;
     }
 }
 
+bool LocalOnly(const Actor* actor) {
+    constexpr s16 kMajoraBattleHandler = 150; // MAJORA_TYPE_BATTLE_HANDLER
+    return LocalOnly(actor->id) || (actor->id == ACTOR_BOSS_07 && actor->params == kMajoraBattleHandler);
+}
+
 bool Synced(const Actor* actor) {
     return (actor->category == ACTORCAT_ENEMY || (actor->category == ACTORCAT_BOSS && SyncedBoss(actor->id))) &&
-           !LocalOnly(actor->id);
+           !LocalOnly(actor);
 }
 
 bool CanCreateOnClient(int16_t actorId, bool withParent, const char*& why) {

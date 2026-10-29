@@ -19,8 +19,6 @@ namespace Coop::Bosses {
 namespace {
 
 int sRewardsBlocked = 0;
-int sMajoraRemoved = 0;
-int16_t sMajoraNoticeScene = -1;
 
 bool ClientPlaying() {
     return !IsHosting() && IsClientInSession() && gPlayState != nullptr && gSaveContext.gameMode == GAMEMODE_NORMAL;
@@ -41,32 +39,14 @@ void OnShouldItemGive(u8 item, bool* should) {
                 item, sRewardsBlocked);
 }
 
-void OnActorInit(Actor* actor) {
-    if (actor->id != ACTOR_BOSS_07 || actor->update == nullptr || IsHosting() || !IsClientInSession()) {
-        return;
-    }
-    sMajoraRemoved++;
-    SPDLOG_INFO("[Coop] majora-removed: Boss_07 params 0x{:04X} removed on the client (Majora is the host's for now)",
-                static_cast<uint16_t>(actor->params));
-    Actor_Kill(actor);
-    if (gPlayState != nullptr && sMajoraNoticeScene != gPlayState->sceneId) {
-        sMajoraNoticeScene = gPlayState->sceneId;
-        Notification::Emit({ .message = "Coop: Majora todavia lo pelea solo el host" });
-    }
-}
-
 void RegisterBossHooks() {
     auto* gi = GameInteractor::Instance;
     gi->RegisterGameHook<GameInteractor::ShouldItemGive>(OnShouldItemGive);
-    gi->RegisterGameHook<GameInteractor::OnActorInit>(OnActorInit);
 }
 
 } // namespace
 
 void Frame() {
-    if (!IsHosting() && !IsClientInSession()) {
-        sMajoraNoticeScene = -1;
-    }
 }
 
 static RegisterShipInitFunc initFunc(RegisterBossHooks);
