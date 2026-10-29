@@ -78,9 +78,12 @@ constexpr u32 kQuestBitsMask = 0x0FFFFFFF; // Bits 28-31 are the heart piece cou
 
 } // namespace
 
-bool ChestFlagsAreScore() {
-    return gPlayState != nullptr &&
-           (gPlayState->sceneId == SCENE_SYATEKI_MIZU || gPlayState->sceneId == SCENE_SYATEKI_MORI);
+bool ChestFlagsAreLocal(int sceneId) {
+    return sceneId == SCENE_SYATEKI_MIZU || sceneId == SCENE_SYATEKI_MORI || sceneId == SCENE_TAKARAYA;
+}
+
+bool ChestFlagsAreLocal() {
+    return gPlayState != nullptr && ChestFlagsAreLocal(gPlayState->sceneId);
 }
 
 namespace {
@@ -212,14 +215,14 @@ const std::vector<Unit>& Units() {
                     [](int k, int64_t v) { gSaveContext.save.saveInfo.unk_EA8[k] = static_cast<u32>(v); }, i, -1 });
         } // Claims: what a chest or a collectible gave. A bit set by one game that the host already has set is the
         // second one taking the same thing: its whole event (the item or rupees with it) is rejected.
-        // In the shooting galleries the chest flags hold the keeper's score (Flags_SetAllTreasure): each game's own.
+        // Where the chest flags hold a minigame's state (ChestFlagsAreLocal), they are each game's own.
         u.push_back({ "live chest flags", Kind::Claim, 0, 0xFFFFFFFFll,
                       [](int) -> int64_t {
-                          return gPlayState != nullptr && !ChestFlagsAreScore() ? gPlayState->actorCtx.sceneFlags.chest
+                          return gPlayState != nullptr && !ChestFlagsAreLocal() ? gPlayState->actorCtx.sceneFlags.chest
                                                                                 : 0;
                       },
                       [](int, int64_t v) {
-                          if (gPlayState != nullptr && !ChestFlagsAreScore()) {
+                          if (gPlayState != nullptr && !ChestFlagsAreLocal()) {
                               gPlayState->actorCtx.sceneFlags.chest = static_cast<u32>(v);
                           }
                       },

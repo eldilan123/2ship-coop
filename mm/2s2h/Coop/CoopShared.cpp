@@ -121,8 +121,8 @@ const std::vector<Field>& Fields() {
                                  continue;
                              }
                              CycleSceneFlags flags = gSaveContext.cycleSceneFlags[i];
-                             // The shooting galleries' chest flags are their keeper's score: each game's own.
-                             if (i == SCENE_SYATEKI_MIZU || i == SCENE_SYATEKI_MORI) {
+                             // Chest flags that hold a minigame's state are each game's own.
+                             if (Inventory::ChestFlagsAreLocal(i)) {
                                  flags.chest = 0;
                              }
                              Put(out, &flags, sizeof(flags));
@@ -175,7 +175,7 @@ const std::vector<Field>& Fields() {
                          Put(out, &gPlayState->actorCtx.sceneFlags.switches[2], 2 * sizeof(u32));
                      } });
         f.push_back({ "live chest flags", Group::World, [](std::vector<uint8_t>& out) {
-                         const u32 chest = Inventory::ChestFlagsAreScore() ? 0 : gPlayState->actorCtx.sceneFlags.chest;
+                         const u32 chest = Inventory::ChestFlagsAreLocal() ? 0 : gPlayState->actorCtx.sceneFlags.chest;
                          Put(out, &chest, sizeof(chest));
                      } });
         f.push_back({ "live room clear flags", Group::World, [](std::vector<uint8_t>& out) {

@@ -46,9 +46,11 @@ void Cancel(uint32_t seq);
 
 // Test only (host): sends malformed inv_event / inv_state messages.
 void TestFuzz();
-// The current scene keeps something other than chests in its chest flags (the shooting galleries' keeper writes its
-// score there): those flags are each game's own, neither sent nor checked.
-bool ChestFlagsAreScore();
+// Scenes that keep game state in their chest flags (the shooting galleries' keeper writes its score there, the
+// treasure chest shop sets and clears its chest's flag every game): those flags are each game's own, neither sent
+// nor checked. The overload without a scene asks about the current one.
+bool ChestFlagsAreLocal(int sceneId);
+bool ChestFlagsAreLocal();
 
 } // namespace Coop::Inventory
 

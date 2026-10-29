@@ -58,14 +58,14 @@ bool IsInvasionPart(const Actor* a) {
 // NPCs whose state only one game can run: the client cannot talk to them yet (priority of milestone 7). Unblocked so
 // far: Romani (En_Ma4: her horseback game is a scene layer, so the host goes there too and both play it) and the
 // shooting galleries (En_Syateki_Man: each game runs its own targets and score, Enemies::LocalOnly and
-// Inventory::ChestFlagsAreScore; the records are shared).
+// Inventory::ChestFlagsAreLocal; the records are shared), the swordsman's school (En_Kendo_Js: its logs are props,
+// its "playing" bit is local) and the treasure chest shop (En_Takaraya: each game builds its own maze; the chest flag
+// it sets and clears is local, the switch flags that remember each form's prize are shared).
 struct Blocked {
     s16 id;
     const char* reason;
 };
 constexpr Blocked kBlocked[] = {
-    { ACTOR_EN_TAKARAYA, "treasure chest shop: its maze and timer live in one game" },
-    { ACTOR_EN_KENDO_JS, "swordsman's school: the minigame lives in one game" },
     { ACTOR_EN_FU, "Honey & Darling: the minigame lives in one game" },
     { ACTOR_EN_AOB_01, "dog race: the race lives in one game" },
     { ACTOR_EN_HS, "Grog's chicks: the chicks follow one Link" },
