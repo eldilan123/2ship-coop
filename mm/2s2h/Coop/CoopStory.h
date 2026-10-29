@@ -15,7 +15,8 @@
 //  the
 //    host's: on the client they stop with "solo el host" and story-host-only counts it (milestone 8: ask the host).
 //  - A cutscene the client starts runs on the client; what it writes reaches the host. cutscene-from-b counts them.
-//  - While the client's Link talks or is in a cutscene (and 500 ms after), it takes no hits from the host's enemies.
+//  - While the client's Link talks, is in a cutscene or in the pause menu (and 500 ms after), it takes no hits from the
+//    host's enemies.
 //  - The alien defense at Romani Ranch (night 1) runs only on the host: the client's invasion handler, aliens and
 //    UFO are removed as they spawn, and the defense's result flags are host-only (kHostOnlyBits).
 //
@@ -33,7 +34,8 @@ uint8_t LocalWeekEventBits(int index);
 uint8_t HostOnlyWeekEventBits(int index);
 // Whether the client's story changes go to the host (gCoop.StoryFromClient).
 bool FromClient();
-// Client: the local Link is talking or in a cutscene, or was until 500 ms ago (hits from the host are dropped then).
+// Client: the local Link is talking, in a cutscene or paused, or was until 500 ms ago (hits from the host are dropped
+// then).
 bool ClientBusy();
 
 } // namespace Coop::Story

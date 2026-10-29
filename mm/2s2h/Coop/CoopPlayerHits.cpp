@@ -403,9 +403,10 @@ void ClientFrame(uint32_t now) {
             Reject(p.msg, "the Link is dead");
             continue;
         }
-        // Talking or in a cutscene (and 500 ms after): the host's enemies do not freeze for this game (milestone 6).
+        // Talking, in a cutscene or paused (and 500 ms after): the host's enemies do not freeze for this game
+        // (milestones 6, 7).
         if (Story::ClientBusy()) {
-            Reject(p.msg, "the Link is talking or in a cutscene");
+            Reject(p.msg, "the Link is talking, in a cutscene or paused");
             continue;
         }
         StartReplay(p, local, used++);

@@ -31,6 +31,9 @@ constexpr float kTeleportDistance = 300.0f;
 
 const SteadyClock::time_point sEpoch = SteadyClock::now();
 uint32_t sSendSeq = 0;
+// The last state sent, sent again (flagged paused) while the local Link does not update in the pause menu.
+State sLastSent = {};
+bool sHaveLastSent = false;
 
 uint32_t NowMs() {
     return static_cast<uint32_t>(
@@ -147,6 +150,22 @@ void CaptureAndSend(Actor* actor) {
     s.health = gSaveContext.save.saveInfo.playerData.health;
     s.healthCapacity = gSaveContext.save.saveInfo.playerData.healthCapacity;
 
+    SendBinary(IsHosting() ? kBroadcast : kHostPlayerId, Protocol::kChannelPlayerState, &s, sizeof(s));
+    sLastSent = s;
+    sHaveLastSent = true;
+}
+
+void SendAgainWhilePaused() {
+    if (!SessionActive() || !InGameplay() || !IS_PAUSED(&gPlayState->pauseCtx) || !sHaveLastSent ||
+        sLastSent.sceneId != gPlayState->sceneId) {
+        return;
+    }
+    State s = sLastSent;
+    s.paused = 1;
+    s.playerId = IsHosting() ? kHostPlayerId : GetSnapshot().localId;
+    s.seq = ++sSendSeq;
+    s.sentMs = NowMs();
+    s.health = gSaveContext.save.saveInfo.playerData.health;
     SendBinary(IsHosting() ? kBroadcast : kHostPlayerId, Protocol::kChannelPlayerState, &s, sizeof(s));
 }
 
@@ -304,11 +323,13 @@ State Interpolate(const State& a, const State& b, float t) {
 
 void OnFrameCleanup() {
     if (!SessionActive()) {
+        sHaveLastSent = false;
         if (!sRemotes.empty()) {
             Reset();
         }
         return;
     }
+    SendAgainWhilePaused();
     // Drop players that left the session.
     const std::vector<PlayerInfo> players = GetSnapshot().players;
     for (auto it = sRemotes.begin(); it != sRemotes.end();) {

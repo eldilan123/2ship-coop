@@ -16,7 +16,8 @@ extern "C" {
 // back right after the update; three safety nets put it back if that ever fails, and count it (it must stay 0).
 //
 // Hysteresis: an enemy switches to another player only if that one is at least 150 units nearer and the last switch
-// was at least a second ago (at once if its target is no longer valid: dead, in a cutscene, gone, another room).
+// was at least a second ago (at once if its target is no longer valid: dead, in a cutscene, in the pause menu, gone,
+// another room).
 // Enemy types that take hold of the player (grab, paralyze, steal) or start a cutscene stay on the host.
 //
 // Game thread only.

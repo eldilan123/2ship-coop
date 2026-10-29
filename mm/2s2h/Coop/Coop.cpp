@@ -14,6 +14,7 @@
 #include "CoopEnemies.h"
 #include "CoopEnemyHealth.h"
 #include "CoopInventory.h"
+#include "CoopPause.h"
 #include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
 #include "CoopProjectiles.h"
@@ -146,6 +147,7 @@ void OnFrame() {
     SessionFrame();
     Clock::Frame();
     PlayerSync::Frame();
+    Pause::Frame();
     // Before the puppets: a puppet whose room is not loaded here is not shown.
     Rooms::Frame();
     Puppet::Frame();

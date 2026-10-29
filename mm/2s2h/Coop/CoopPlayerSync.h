@@ -10,12 +10,13 @@ extern "C" {
 }
 
 // Player state sync (binary channel kChannelPlayerState). Every player sends the pose of its own Link after its
-// update, about 20 times per second; the host applies the clients' states and relays them to the other clients.
-// Only the resulting pose and the fields the Player draw code reads are sent: no pointers, no animation ids.
+// update, about 20 times per second (and its last state again every frame while it is in the pause menu); the host
+// applies the clients' states and relays them to the other clients. Only the resulting pose and the fields the Player
+// draw code reads are sent: no pointers, no animation ids.
 namespace Coop::PlayerSync {
 
 // Bump when State changes.
-constexpr uint16_t kFormatVersion = 2;
+constexpr uint16_t kFormatVersion = 3;
 constexpr uint32_t kMagic = 0x53504C50; // "PLPS"
 constexpr size_t kAnimNameSize = 96;
 
@@ -23,8 +24,8 @@ struct State {
     uint32_t magic;
     uint16_t formatVersion;
     uint8_t inGameplay; // 0 while the sender is on the title screen, a gamestate switch, etc.
-    uint8_t pad0;
-    uint32_t playerId; // Set by the host when relaying; the sender's own id otherwise
+    uint8_t paused;     // 1: the sender is in its pause menu (its last state, sent again every frame)
+    uint32_t playerId;  // Set by the host when relaying; the sender's own id otherwise
     uint32_t seq;
     uint32_t sentMs; // Sender's clock, for jitter and interpolation
     int16_t sceneId;

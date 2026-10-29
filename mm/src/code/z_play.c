@@ -1028,7 +1028,8 @@ void Play_UpdateMain(PlayState* this) {
             AnimTaskQueue_Reset(&this->animTaskQueue);
             Object_UpdateEntries(&this->objectCtx);
 
-            if (!sp5C && (IREG(72) == 0)) {
+            // 2S2H [Coop] A coop host's actors keep running in the pause menu while a client is in the session.
+            if ((!sp5C || !GameInteractor_Should(VB_PAUSE_STOPS_WORLD, true)) && (IREG(72) == 0)) {
                 this->gameplayFrames++;
                 Rumble_SetUpdateEnabled(true);
 

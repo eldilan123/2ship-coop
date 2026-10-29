@@ -1221,7 +1221,10 @@ void Environment_UpdateTime(PlayState* play, EnvironmentContext* envCtx, PauseCo
                             GameOverContext* gameOverCtx) {
     u16 time;
 
-    if (!sEnvIsTimeStopped && (pauseCtx->state == PAUSE_STATE_OFF) && (gameOverCtx->state == GAMEOVER_INACTIVE)) {
+    // 2S2H [Coop] VB_PAUSE_STOPS_WORLD: see Environment_Update.
+    if (!sEnvIsTimeStopped &&
+        ((pauseCtx->state == PAUSE_STATE_OFF) || !GameInteractor_Should(VB_PAUSE_STOPS_WORLD, true)) &&
+        (gameOverCtx->state == GAMEOVER_INACTIVE)) {
         if ((msgCtx->msgMode == MSGMODE_NONE) || (msgCtx->currentTextId == 0xF7) || (msgCtx->currentTextId == 0x20D2) ||
             (msgCtx->currentTextId == 0x140C) ||
             ((msgCtx->currentTextId >= 0x100) && (msgCtx->currentTextId <= 0x200)) ||
@@ -1805,6 +1808,9 @@ void Environment_Update(PlayState* play, EnvironmentContext* envCtx, LightContex
         Environment_UpdateSun(play);
         Environment_UpdateLights(play, envCtx, lightCtx);
         Environment_UpdatePostmanEvents(play);
+    } else if (!GameInteractor_Should(VB_PAUSE_STOPS_WORLD, true)) {
+        // 2S2H [Coop] ...and so does its clock (only the clock: the sky, lights and music wait for the menu to close).
+        Environment_UpdateTime(play, envCtx, pauseCtx, msgCtx, gameOverCtx);
     }
 }
 

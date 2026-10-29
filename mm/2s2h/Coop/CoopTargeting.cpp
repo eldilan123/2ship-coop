@@ -12,6 +12,7 @@
 #include "CoopArgs.h"
 #include "CoopEnemies.h"
 #include "CoopEnemyTypes.h"
+#include "CoopPause.h"
 #include "CoopPlayerHits.h"
 #include "CoopPlayerSync.h"
 #include "CoopPuppet.h"
@@ -179,6 +180,11 @@ s32 DamagePlayer(PlayState* play, s32 damage) {
         PlayerHits::HostDirectDamage(sView.playerId, sView.enemy, damage);
         return true;
     }
+    // The host in its pause menu with the world running takes no damage (milestone 7).
+    if (Pause::HostWorldRuns()) {
+        Pause::NoteDroppedDamage();
+        return false;
+    }
     return sOriginalDamagePlayer != nullptr ? sOriginalDamagePlayer(play, damage) : false;
 }
 
@@ -213,7 +219,9 @@ bool RoomLoaded(int8_t room) {
 std::vector<Candidate> Candidates() {
     std::vector<Candidate> out;
     Player* local = LocalLink();
-    if (local != nullptr && !(local->stateFlags1 & PLAYER_STATE1_DEAD) && local->csAction == PLAYER_CSACTION_NONE) {
+    // A player in the pause menu is nobody's target (milestone 7).
+    if (local != nullptr && !(local->stateFlags1 & PLAYER_STATE1_DEAD) && local->csAction == PLAYER_CSACTION_NONE &&
+        !IS_PAUSED(&gPlayState->pauseCtx)) {
         out.push_back({ kHostPlayerId, local });
     }
     for (const PlayerInfo& info : GetSnapshot().players) {
@@ -226,7 +234,7 @@ std::vector<Candidate> Candidates() {
         if (puppet == nullptr || puppet->actor.update == nullptr || !PlayerSync::LatestState(info.id, s, &age) ||
             age > kFreshStateMs || !s.inGameplay || s.sceneId != gPlayState->sceneId ||
             s.sceneLayer != static_cast<int8_t>(gSaveContext.sceneLayer) || (s.stateFlags1 & PLAYER_STATE1_DEAD) ||
-            s.csAction != PLAYER_CSACTION_NONE || !RoomLoaded(s.roomNum)) {
+            s.csAction != PLAYER_CSACTION_NONE || s.paused || !RoomLoaded(s.roomNum)) {
             continue;
         }
         out.push_back({ info.id, puppet });

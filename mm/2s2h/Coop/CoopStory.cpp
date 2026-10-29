@@ -117,9 +117,11 @@ void ClientFrame() {
     MessageContext& msg = play->msgCtx;
     const auto now = SteadyClock::now();
 
-    // Talking or in a cutscene: no hits from the host's enemies (they do not freeze for this game), and 500 ms after.
+    // Talking, in a cutscene or in the pause menu: no hits from the host's enemies (they do not freeze for this game),
+    // and 500 ms after; none build up for when the menu closes.
     const bool busy = msg.msgMode != MSGMODE_NONE || (link->stateFlags1 & PLAYER_STATE1_TALKING) ||
-                      link->csAction != PLAYER_CSACTION_NONE || CutsceneManager_GetCurrentCsId() != CS_ID_NONE;
+                      link->csAction != PLAYER_CSACTION_NONE || CutsceneManager_GetCurrentCsId() != CS_ID_NONE ||
+                      IS_PAUSED(&play->pauseCtx);
     if (busy) {
         sBusyUntil = now + std::chrono::milliseconds(500);
     }

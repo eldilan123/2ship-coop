@@ -1756,6 +1756,15 @@ typedef enum {
 
     // #### `result`
     // ```c
+    // true
+    // ```
+    // #### `args`
+    // - None
+    // Asked only while paused: whether the pause menu stops the actors and the clock (Play_UpdateMain, z_kankyo.c)
+    VB_PAUSE_STOPS_WORLD,
+
+    // #### `result`
+    // ```c
     // (HS_GET_BANK_RUPEES() >= 1000) && (this->previousBankValue < 1000) && !CHECK_WEEKEVENTREG(WEEKEVENTREG_59_80)
     // ```
     // #### `args`
