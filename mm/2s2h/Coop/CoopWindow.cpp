@@ -34,6 +34,7 @@ ImVec4 StateColor(Coop::SessionState state) {
             return ImVec4(0.4f, 0.9f, 0.4f, 1.0f);
         case Coop::SessionState::Connecting:
         case Coop::SessionState::Handshaking:
+        case Coop::SessionState::Reconnecting:
             return ImVec4(0.95f, 0.85f, 0.3f, 1.0f);
         case Coop::SessionState::Rejected:
         case Coop::SessionState::Disconnected:

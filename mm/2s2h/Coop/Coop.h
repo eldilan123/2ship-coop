@@ -41,6 +41,8 @@ bool IsRunning();
 // True while this game hosts a session / is a client whose handshake was accepted.
 bool IsHosting();
 bool IsConnectedClient();
+// Client: the connection dropped and the network thread is getting it back (milestone 8, up to kRejoinWindow).
+bool IsReconnecting();
 SessionSnapshot GetSnapshot();
 
 // Application messages. `target` is a player id or kBroadcast; clients always send to the host.

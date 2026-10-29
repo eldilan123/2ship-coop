@@ -592,7 +592,8 @@ void HostOnResyncRequest(uint32_t from, const nlohmann::json& message) {
     }
     const auto now = std::chrono::steady_clock::now();
     const auto last = sLastResyncFor.find(from);
-    if (last != sLastResyncFor.end() && now - last->second < kResyncMinInterval) {
+    const bool reconnected = Protocol::GetString(message, "why", "") == "reconnected";
+    if (!reconnected && last != sLastResyncFor.end() && now - last->second < kResyncMinInterval) {
         SPDLOG_INFO("[Coop] resync: player {} asked again too soon; ignored", from);
         return;
     }
@@ -610,6 +611,41 @@ void ClientOnBringToHost(uint32_t, const nlohmann::json&) {
     }
     Notify("Coop: el host te trajo a su lado");
     ClientReturnToHost("the host brought this player");
+}
+
+// Milestone 8: while the network thread gets the connection back, the session stays (nothing is saved, as always) and
+// the Link waits in place (PLAYER_CSACTION_WAIT stops the actors around it too); once back, a resync.
+bool sReconnectHold = false;
+bool sReconnectFroze = false;
+
+void ClientWhileReconnecting() {
+    if (!sReconnectHold) {
+        sReconnectHold = true;
+        SPDLOG_WARN("[Coop] reconnect: the connection to the host dropped; waiting for it (the session stays)");
+        Notify("Coop: se corto la conexion con el host; reconectando (hasta 60 s)...");
+    }
+    if (!sReconnectFroze && InGameplay() && gPlayState->transitionTrigger == TRANS_TRIGGER_OFF &&
+        gPlayState->transitionMode == TRANS_MODE_OFF && GET_PLAYER(gPlayState)->csAction == PLAYER_CSACTION_NONE &&
+        gPlayState->msgCtx.msgMode == MSGMODE_NONE) {
+        sReconnectFroze = true;
+        Player_SetCsActionWithHaltedActors(gPlayState, NULL, PLAYER_CSACTION_WAIT);
+    }
+}
+
+void ClientReconnected() {
+    sReconnectHold = false;
+    if (sReconnectFroze) {
+        sReconnectFroze = false;
+        if (InGameplay() && GET_PLAYER(gPlayState)->csAction == PLAYER_CSACTION_WAIT) {
+            Player_SetCsActionWithHaltedActors(gPlayState, NULL, PLAYER_CSACTION_END);
+        }
+    }
+    if (!IsConnectedClient()) {
+        return; // It did not come back: the session ends below
+    }
+    SPDLOG_INFO("[Coop] reconnect: back in the session with the same player slot; asking for a resync");
+    Notify("Coop: reconectado con el host");
+    RequestResync("reconnected", true);
 }
 
 // Decision (e): a client that loses the session sees why and goes back to the title screen without saving.
@@ -676,10 +712,10 @@ bool IsClientInSession() {
     return sStage == ClientStage::Entering || sStage == ClientStage::InSession;
 }
 
-void RequestResync(const std::string& why) {
+void RequestResync(const std::string& why, bool force) {
     static auto sLast = std::chrono::steady_clock::time_point{};
     const auto now = std::chrono::steady_clock::now();
-    if (IsHosting() || sStage != ClientStage::InSession || now - sLast < kResyncMinInterval) {
+    if (IsHosting() || sStage != ClientStage::InSession || (!force && now - sLast < kResyncMinInterval)) {
         return;
     }
     sLast = now;
@@ -720,6 +756,13 @@ std::string SessionStatusText() {
 void SessionFrame() {
     if (sStage == ClientStage::Requested && !IsConnectedClient()) {
         sStage = ClientStage::None;
+    }
+    if ((sStage == ClientStage::Entering || sStage == ClientStage::InSession) && IsReconnecting()) {
+        ClientWhileReconnecting();
+        return;
+    }
+    if (sReconnectHold) {
+        ClientReconnected();
     }
     if ((sStage == ClientStage::Entering || sStage == ClientStage::InSession) && !IsConnectedClient()) {
         const SessionSnapshot net = GetSnapshot();

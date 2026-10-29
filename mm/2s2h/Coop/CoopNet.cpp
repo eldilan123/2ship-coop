@@ -14,6 +14,7 @@ using CoopRawSocket = int;
 #include "CoopNet.h"
 
 #include <algorithm>
+#include <random>
 #include <SDL2/SDL_net.h>
 #include <spdlog/spdlog.h>
 #include <fmt/format.h>
@@ -135,7 +136,17 @@ struct CoopNet::Connection {
     Clock::time_point lastPingSent;
     int32_t rttMs = -1;
     std::deque<std::pair<Clock::time_point, std::string>> delayedOut; // --coop-test-net-delay, in order
+    std::string token; // Host: given in the welcome; the client shows it to get its slot back (milestone 8)
 };
+
+namespace {
+
+std::string NewToken() {
+    static std::mt19937_64 sRandom{ std::random_device{}() };
+    return fmt::format("{:016x}", sRandom());
+}
+
+} // namespace
 
 const char* SessionStateName(SessionState state) {
     switch (state) {
@@ -149,6 +160,8 @@ const char* SessionStateName(SessionState state) {
             return "Hosting";
         case SessionState::Connected:
             return "Connected";
+        case SessionState::Reconnecting:
+            return "Reconnecting";
         case SessionState::Rejected:
             return "Rejected";
         case SessionState::Disconnected:
@@ -489,6 +502,7 @@ void CoopNet::RunHost() {
     SDLNet_TCP_AddSocket(socketSet, server);
     std::vector<std::unique_ptr<Connection>> conns;
     mNextPlayerId = kHostPlayerId + 1;
+    mHeld.clear();
 
     SetState(SessionState::Hosting, fmt::format("Hosting on port {}", mConfig.port));
     COOP_INFO("Hosting on port {} as '{}' (build {}, protocol {})", mConfig.port, mConfig.name, mConfig.buildVersion,
@@ -525,7 +539,8 @@ void CoopNet::RunHost() {
         }
 
         size_t activePlayers =
-            1 + std::count_if(conns.begin(), conns.end(), [](const auto& c) { return c->active && !c->closed; });
+            1 + std::count_if(conns.begin(), conns.end(), [](const auto& c) { return c->active && !c->closed; }) +
+            mHeld.size();
 
         for (auto& conn : conns) {
             if (conn->closed || ready <= 0 || !SDLNet_SocketReady(conn->socket)) {
@@ -607,12 +622,28 @@ void CoopNet::RunHost() {
             if (conn.active) {
                 COOP_INFO("Player '{}' (id {}) disconnected: {}", conn.name, conn.playerId, conn.closeReason);
                 playersChanged = true;
+                // Milestone 8: a dropped connection (not a player who left) keeps its slot for kRejoinWindow.
+                if (conn.closeReason.rfind("left the session", 0) != 0 && conn.closeReason != "rejected" &&
+                    conn.closeReason != "protocol error") {
+                    mHeld.push_back({ conn.playerId, conn.name, conn.color, conn.token, now });
+                    COOP_INFO("Holding player {}'s slot for {} s so it can reconnect", conn.playerId,
+                              std::chrono::duration_cast<std::chrono::seconds>(kRejoinWindow).count());
+                }
             } else {
                 COOP_INFO("Connection from {} closed: {}", conn.peer, conn.closeReason);
             }
             SDLNet_TCP_DelSocket(socketSet, conn.socket);
             SDLNet_TCP_Close(conn.socket);
             it = conns.erase(it);
+        }
+
+        for (auto it = mHeld.begin(); it != mHeld.end();) {
+            if (now - it->since > kRejoinWindow) {
+                COOP_INFO("Player {} did not reconnect in time; its slot is released", it->playerId);
+                it = mHeld.erase(it);
+            } else {
+                ++it;
+            }
         }
 
         std::vector<PlayerInfo> players = HostBuildPlayerList(conns);
@@ -640,6 +671,7 @@ void CoopNet::RunHost() {
     SDLNet_TCP_Close(server);
     SDLNet_FreeSocketSet(socketSet);
 
+    mHeld.clear();
     COOP_INFO("Stopped hosting");
     SetPlayers({}, 0);
     SetState(SessionState::Idle, "Session stopped");
@@ -663,6 +695,33 @@ void CoopNet::HostHandleHello(Connection& conn, const Protocol::Frame& frame, si
                                      mConfig.buildVersion, version));
         return;
     }
+    // Milestone 8: a client coming back within kRejoinWindow shows its token and gets its slot (and id) back.
+    auto rejoin = hello.find("rejoin");
+    if (rejoin != hello.end()) {
+        const int64_t id = rejoin->is_object() ? Protocol::GetInt(*rejoin, "id", -1) : -1;
+        const std::string token = rejoin->is_object() ? Protocol::GetString(*rejoin, "token") : "";
+        auto held = std::find_if(mHeld.begin(), mHeld.end(), [&](const HeldSlot& h) {
+            return static_cast<int64_t>(h.playerId) == id && !token.empty() && h.token == token;
+        });
+        if (held == mHeld.end()) {
+            HostReject(conn, "Your place in the session was not kept (more than 60 seconds passed, or the host "
+                             "restarted the session). Join again.");
+            return;
+        }
+        conn.color = held->color;
+        conn.playerId = held->playerId;
+        conn.token = held->token;
+        mHeld.erase(held);
+        conn.active = true;
+        conn.lastReceived = conn.lastPingSent = Clock::now();
+        SendControl(conn, { { "type", "welcome" },
+                            { "id", conn.playerId },
+                            { "version", mConfig.buildVersion },
+                            { "token", conn.token },
+                            { "rejoined", true } });
+        COOP_INFO("Handshake accepted: '{}' (id {}) from {} rejoined its slot", conn.name, conn.playerId, conn.peer);
+        return;
+    }
     if (activePlayers >= kMaxPlayers) {
         HostReject(conn, fmt::format("The session is full ({}/{} players).", activePlayers, kMaxPlayers));
         return;
@@ -674,8 +733,12 @@ void CoopNet::HostHandleHello(Connection& conn, const Protocol::Frame& frame, si
     }
     conn.active = true;
     conn.playerId = mNextPlayerId++;
+    conn.token = NewToken();
     conn.lastReceived = conn.lastPingSent = Clock::now();
-    SendControl(conn, { { "type", "welcome" }, { "id", conn.playerId }, { "version", mConfig.buildVersion } });
+    SendControl(conn, { { "type", "welcome" },
+                        { "id", conn.playerId },
+                        { "version", mConfig.buildVersion },
+                        { "token", conn.token } });
     COOP_INFO("Handshake accepted: '{}' (id {}) from {}", conn.name, conn.playerId, conn.peer);
 }
 
@@ -711,173 +774,242 @@ void CoopNet::RunClient() {
         COOP_WARN("Could not resolve '{}': {}", mConfig.address, SDLNet_GetError());
         return;
     }
-    TCPsocket socket = SDLNet_TCP_Open(&hostAddress);
-    if (socket == nullptr) {
-        SetState(SessionState::Failed, fmt::format("Could not connect to {}", target));
-        COOP_WARN("Could not connect to {}: {}", target, SDLNet_GetError());
-        return;
-    }
-
-    COOP_INFO("TCP_NODELAY {} on the connection to {}", EnableNoDelay(socket) ? "enabled" : "NOT enabled", target);
-    SDLNet_SocketSet socketSet = SDLNet_AllocSocketSet(1);
-    SDLNet_TCP_AddSocket(socketSet, socket);
-
-    Connection host;
-    host.socket = socket;
-    host.peer = target;
-    host.playerId = kHostPlayerId;
-    host.openedAt = host.lastReceived = host.lastPingSent = Clock::now();
-
-    SetState(SessionState::Handshaking, fmt::format("Connected to {}, waiting for the host to accept", target));
-    COOP_INFO("Connected to {}, sending handshake", target);
-    SendControl(host, { { "type", "hello" },
-                        { "protocol", mConfig.protocolVersion },
-                        { "version", mConfig.buildVersion },
-                        { "name", mConfig.name },
-                        { "color", Protocol::ColorToJson(mConfig.color) } });
 
     SessionState endState = SessionState::Disconnected;
     std::string endMessage;
     std::vector<PlayerInfo> players;
     uint32_t localId = 0;
+    // Milestone 8: once in the session, a lost connection is retried for kRejoinWindow with the host's token.
+    std::string token;
+    bool established = false;
+    Clock::time_point lostAt = {};
+    bool testDropped = false;
 
-    while (!mStopRequested.load() && !host.closed) {
-        const int ready = SDLNet_CheckSockets(socketSet, kPollIntervalMs);
-        if (ready < 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
-        }
-        const Clock::time_point now = Clock::now();
+    while (true) {
+        TCPsocket socket = SDLNet_TCP_Open(&hostAddress);
+        if (socket == nullptr) {
+            if (!established) {
+                SetState(SessionState::Failed, fmt::format("Could not connect to {}", target));
+                COOP_WARN("Could not connect to {}: {}", target, SDLNet_GetError());
+                return;
+            }
+        } else {
+            COOP_INFO("TCP_NODELAY {} on the connection to {}", EnableNoDelay(socket) ? "enabled" : "NOT enabled",
+                      target);
+            SDLNet_SocketSet socketSet = SDLNet_AllocSocketSet(1);
+            SDLNet_TCP_AddSocket(socketSet, socket);
 
-        if (ready > 0 && SDLNet_SocketReady(socket)) {
-            std::vector<Protocol::Frame> frames;
-            ReadFrom(host, frames);
-            for (auto& frame : frames) {
-                CountReceived(kHostPlayerId, frame);
-                if (host.closed) {
-                    break;
-                }
-                const bool isJson = frame.kind == Protocol::Frame::Kind::Json;
-                const std::string type = isJson ? Protocol::GetString(frame.json, "type") : "";
+            Connection host;
+            host.socket = socket;
+            host.peer = target;
+            host.playerId = kHostPlayerId;
+            host.openedAt = host.lastReceived = host.lastPingSent = Clock::now();
 
-                if (type == "reject") {
-                    endState = SessionState::Rejected;
-                    endMessage = Printable(Protocol::GetString(frame.json, "reason", "No reason given."), 300);
-                    COOP_WARN("Rejected by host: {}", endMessage);
-                    host.closed = true;
-                    host.closeReason = "rejected";
-                    break;
+            if (!established) {
+                SetState(SessionState::Handshaking,
+                         fmt::format("Connected to {}, waiting for the host to accept", target));
+            }
+            COOP_INFO("Connected to {}, sending handshake{}", target, established ? " (rejoining our slot)" : "");
+            nlohmann::json hello = { { "type", "hello" },
+                                     { "protocol", mConfig.protocolVersion },
+                                     { "version", mConfig.buildVersion },
+                                     { "name", mConfig.name },
+                                     { "color", Protocol::ColorToJson(mConfig.color) } };
+            if (established) {
+                hello["rejoin"] = { { "id", localId }, { "token", token } };
+            }
+            SendControl(host, hello);
+
+            while (!mStopRequested.load() && !host.closed) {
+                const int ready = SDLNet_CheckSockets(socketSet, kPollIntervalMs);
+                if (ready < 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
                 }
-                if (type == "bye") {
-                    endState = SessionState::Disconnected;
-                    endMessage = Printable(Protocol::GetString(frame.json, "reason", "The host left."), 300);
-                    COOP_INFO("Host ended the session: {}", endMessage);
-                    host.closed = true;
-                    host.closeReason = "host left";
-                    break;
-                }
-                if (!host.active) {
-                    if (type == "welcome") {
-                        host.active = true;
-                        localId = static_cast<uint32_t>(Protocol::GetInt(frame.json, "id"));
-                        host.lastPingSent = now;
-                        SetState(SessionState::Connected, fmt::format("Connected to {}", target));
-                        COOP_INFO("Handshake accepted by host, our player id is {}", localId);
-                    } else {
-                        COOP_WARN("Host sent '{}' before accepting the handshake. Dropping the connection.", type);
-                        host.closed = true;
-                        host.closeReason = "protocol error";
-                    }
-                    continue;
-                }
-                if (HandleHeartbeatMessage(host, frame)) {
-                    continue;
-                }
-                if (type == "players") {
-                    auto listIt = frame.json.find("players");
-                    if (listIt == frame.json.end() || !listIt->is_array()) {
-                        COOP_WARN("Ignoring malformed player list from host");
-                        continue;
-                    }
-                    players.clear();
-                    for (const auto& entry : *listIt) {
-                        if (players.size() >= kMaxListedPlayers) {
+                const Clock::time_point now = Clock::now();
+
+                if (ready > 0 && SDLNet_SocketReady(socket)) {
+                    std::vector<Protocol::Frame> frames;
+                    ReadFrom(host, frames);
+                    for (auto& frame : frames) {
+                        CountReceived(kHostPlayerId, frame);
+                        if (host.closed) {
                             break;
                         }
-                        if (!entry.is_object()) {
+                        const bool isJson = frame.kind == Protocol::Frame::Kind::Json;
+                        const std::string type = isJson ? Protocol::GetString(frame.json, "type") : "";
+
+                        if (type == "reject") {
+                            endState = SessionState::Rejected;
+                            endMessage = Printable(Protocol::GetString(frame.json, "reason", "No reason given."), 300);
+                            COOP_WARN("Rejected by host: {}", endMessage);
+                            host.closed = true;
+                            host.closeReason = "rejected";
+                            break;
+                        }
+                        if (type == "bye") {
+                            endState = SessionState::Disconnected;
+                            endMessage = Printable(Protocol::GetString(frame.json, "reason", "The host left."), 300);
+                            COOP_INFO("Host ended the session: {}", endMessage);
+                            host.closed = true;
+                            host.closeReason = "host left";
+                            break;
+                        }
+                        if (!host.active) {
+                            if (type == "welcome") {
+                                host.active = true;
+                                localId = static_cast<uint32_t>(Protocol::GetInt(frame.json, "id"));
+                                token = Protocol::GetString(frame.json, "token");
+                                host.lastPingSent = now;
+                                // Whatever the game queued while the connection was down is stale (it resyncs).
+                                TakeOutbox();
+                                SetState(SessionState::Connected, fmt::format("Connected to {}", target));
+                                if (established) {
+                                    COOP_INFO("Reconnected to {}: the host kept our slot, our player id is {}", target,
+                                              localId);
+                                } else {
+                                    COOP_INFO("Handshake accepted by host, our player id is {}", localId);
+                                }
+                                established = true;
+                            } else {
+                                COOP_WARN("Host sent '{}' before accepting the handshake. Dropping the connection.",
+                                          type);
+                                host.closed = true;
+                                host.closeReason = "protocol error";
+                            }
                             continue;
                         }
-                        PlayerInfo player;
-                        player.id = static_cast<uint32_t>(Protocol::GetInt(entry, "id"));
-                        player.name = Protocol::SanitizeName(Protocol::GetString(entry, "name"));
-                        auto colorIt = entry.find("color");
-                        if (colorIt != entry.end()) {
-                            Protocol::ColorFromJson(*colorIt, player.color);
+                        if (HandleHeartbeatMessage(host, frame)) {
+                            continue;
                         }
-                        auto hostIt = entry.find("host");
-                        player.isHost = hostIt != entry.end() && hostIt->is_boolean() && hostIt->get<bool>();
-                        players.push_back(player);
+                        if (type == "players") {
+                            auto listIt = frame.json.find("players");
+                            if (listIt == frame.json.end() || !listIt->is_array()) {
+                                COOP_WARN("Ignoring malformed player list from host");
+                                continue;
+                            }
+                            players.clear();
+                            for (const auto& entry : *listIt) {
+                                if (players.size() >= kMaxListedPlayers) {
+                                    break;
+                                }
+                                if (!entry.is_object()) {
+                                    continue;
+                                }
+                                PlayerInfo player;
+                                player.id = static_cast<uint32_t>(Protocol::GetInt(entry, "id"));
+                                player.name = Protocol::SanitizeName(Protocol::GetString(entry, "name"));
+                                auto colorIt = entry.find("color");
+                                if (colorIt != entry.end()) {
+                                    Protocol::ColorFromJson(*colorIt, player.color);
+                                }
+                                auto hostIt = entry.find("host");
+                                player.isHost = hostIt != entry.end() && hostIt->is_boolean() && hostIt->get<bool>();
+                                players.push_back(player);
+                            }
+                            COOP_INFO("Players ({}): {}", players.size(), DescribePlayers(players, localId));
+                            continue;
+                        }
+                        if (isJson && IsControlType(type)) {
+                            COOP_WARN("Host sent unexpected control message '{}'. Dropping the connection.", type);
+                            host.closed = true;
+                            host.closeReason = "protocol error";
+                            continue;
+                        }
+                        PushInbox(kHostPlayerId, std::move(frame));
                     }
-                    COOP_INFO("Players ({}): {}", players.size(), DescribePlayers(players, localId));
-                    continue;
                 }
-                if (isJson && IsControlType(type)) {
-                    COOP_WARN("Host sent unexpected control message '{}'. Dropping the connection.", type);
+
+                if (host.active) {
+                    for (auto& message : TakeOutbox()) {
+                        SendRaw(host, message.bytes);
+                    }
+                }
+
+                FlushDelayed(host, Clock::now());
+                UpdateSilence(now);
+                if (!host.closed) {
+                    if (!host.active) {
+                        if (now - host.openedAt > kHandshakeTimeout) {
+                            if (!established) {
+                                endState = SessionState::Failed;
+                                endMessage = "The host did not answer the handshake.";
+                            }
+                            COOP_WARN("Handshake with {} timed out", target);
+                            host.closed = true;
+                            host.closeReason = "handshake timed out";
+                        }
+                    } else {
+                        TickHeartbeat(host, now);
+                    }
+                }
+                // --coop-test-drop: the connection goes away once, as if the cable were pulled.
+                if (mConfig.testDropAfterSeconds > 0 && !testDropped && host.active && !host.closed &&
+                    now - mSessionStart >= std::chrono::seconds(mConfig.testDropAfterSeconds)) {
+                    testDropped = true;
+                    COOP_WARN("TEST: --coop-test-drop {} reached, closing the connection without a goodbye",
+                              mConfig.testDropAfterSeconds);
                     host.closed = true;
-                    host.closeReason = "protocol error";
-                    continue;
+                    host.closeReason = "test drop";
                 }
-                PushInbox(kHostPlayerId, std::move(frame));
-            }
-        }
 
-        if (host.active) {
-            for (auto& message : TakeOutbox()) {
-                SendRaw(host, message.bytes);
-            }
-        }
-
-        FlushDelayed(host, Clock::now());
-        UpdateSilence(now);
-        if (!host.closed) {
-            if (!host.active) {
-                if (now - host.openedAt > kHandshakeTimeout) {
-                    endState = SessionState::Failed;
-                    endMessage = "The host did not answer the handshake.";
-                    COOP_WARN("Handshake with {} timed out", target);
-                    host.closed = true;
+                std::vector<PlayerInfo> withRtt = players;
+                for (auto& player : withRtt) {
+                    if (player.isHost) {
+                        player.rttMs = host.rttMs;
+                    }
                 }
-            } else {
-                TickHeartbeat(host, now);
+                SetPlayers(std::move(withRtt), localId);
+            }
+
+            const bool wasActive = host.active;
+            if (!host.closed && wasActive) {
+                SendControl(host, { { "type", "bye" }, { "reason", "Player left." } });
+            }
+            SDLNet_TCP_DelSocket(socketSet, socket);
+            SDLNet_TCP_Close(socket);
+            SDLNet_FreeSocketSet(socketSet);
+
+            if (!host.closed) {
+                endState = SessionState::Idle;
+                endMessage = "Left the session";
+                COOP_INFO("Left the session");
+                break;
+            }
+            if (!endMessage.empty()) {
+                break; // Rejected, the host left, or the first handshake failed
+            }
+            if (!established) {
+                endState = SessionState::Failed;
+                endMessage = fmt::format("Lost connection to the host: {}", host.closeReason);
+                COOP_WARN("Disconnected from {}: {}", target, host.closeReason);
+                break;
+            }
+            if (wasActive) {
+                lostAt = Clock::now();
+                COOP_WARN("Disconnected from {}: {}; reconnecting for up to {} s", target, host.closeReason,
+                          std::chrono::duration_cast<std::chrono::seconds>(kRejoinWindow).count());
             }
         }
 
-        std::vector<PlayerInfo> withRtt = players;
-        for (auto& player : withRtt) {
-            if (player.isHost) {
-                player.rttMs = host.rttMs;
-            }
+        // Lost (or a reconnection attempt failed): try again until the host's hold on our slot runs out.
+        if (Clock::now() - lostAt > kRejoinWindow) {
+            endState = SessionState::Disconnected;
+            endMessage = "Lost connection to the host and could not reconnect within 60 seconds.";
+            COOP_WARN("Could not reconnect to {} within the rejoin window", target);
+            break;
         }
-        SetPlayers(std::move(withRtt), localId);
+        SetState(SessionState::Reconnecting, fmt::format("Connection to {} lost; reconnecting...", target));
+        for (int i = 0; i < 20 && !mStopRequested.load(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        TakeOutbox(); // What the game sends meanwhile has nowhere to go
+        if (mStopRequested.load()) {
+            endState = SessionState::Idle;
+            endMessage = "Left the session";
+            COOP_INFO("Left the session while reconnecting");
+            break;
+        }
     }
-
-    if (host.closed) {
-        if (endMessage.empty()) {
-            endState = host.active ? SessionState::Disconnected : SessionState::Failed;
-            endMessage = fmt::format("Lost connection to the host: {}", host.closeReason);
-            COOP_WARN("Disconnected from {}: {}", target, host.closeReason);
-        }
-    } else {
-        if (host.active) {
-            SendControl(host, { { "type", "bye" }, { "reason", "Player left." } });
-        }
-        endState = SessionState::Idle;
-        endMessage = "Left the session";
-        COOP_INFO("Left the session");
-    }
-
-    SDLNet_TCP_DelSocket(socketSet, socket);
-    SDLNet_TCP_Close(socket);
-    SDLNet_FreeSocketSet(socketSet);
 
     SetPlayers({}, 0);
     SetState(endState, endMessage);

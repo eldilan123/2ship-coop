@@ -36,7 +36,7 @@ void ClientReturnToHost(const char* why);
 // (the save, the cycle flags), the inventory with the live flags and the enemy manifest; the client takes all of it,
 // drops what it had pending, and follows the host if it is in another scene. At most once every 10 s per client (the
 // host enforces it). The detector asks by itself when a field stays different (CoopShared.cpp).
-void RequestResync(const std::string& why);
+void RequestResync(const std::string& why, bool force = false);
 // Host: sends a client back next to the host ("Bring next to me" in the Coop window).
 void BringToHost(uint32_t playerId);
 

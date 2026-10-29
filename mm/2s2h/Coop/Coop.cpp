@@ -59,6 +59,7 @@ bool StartSession(SessionConfig config) {
     config.buildVersion = BuildVersion();
     config.protocolVersion = ProtocolVersion();
     config.silenceAfterSeconds = GetLaunchOptions().silenceAfterSeconds;
+    config.testDropAfterSeconds = GetLaunchOptions().testDropAfterSeconds;
     config.testNetDelayMs = GetLaunchOptions().testNetDelayMs;
     if (config.testNetDelayMs > 0) {
         SPDLOG_WARN("[Coop] TEST: ===== SIMULATED LATENCY ON: everything this game sends, and every message it "
@@ -264,6 +265,10 @@ bool IsHosting() {
 
 bool IsConnectedClient() {
     return IsRunning() && sNet->GetSnapshot().state == SessionState::Connected;
+}
+
+bool IsReconnecting() {
+    return IsRunning() && sNet->GetSnapshot().state == SessionState::Reconnecting;
 }
 
 SessionSnapshot GetSnapshot() {

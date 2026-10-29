@@ -20,6 +20,7 @@ struct LaunchOptions {
     std::optional<int> fakeProtocol;
     int quitAfterSeconds = 0;
     int silenceAfterSeconds = 0;
+    int testDropAfterSeconds = 0;     // Client: drop the connection once (no goodbye) this long after starting
     bool testEnter = false;           // Client: press "Enter session" automatically once connected
     bool testCycleAccept = false;     // Host: accept every cycle request once free; its save file is not written
     bool testClockLog = false;        // Both: log a clock sample every second while in gameplay

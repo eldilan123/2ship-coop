@@ -646,11 +646,12 @@ std::vector<char*> ConsumeArgs(int argc, char* argv[]) {
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("--coop-fake-protocol: '{}' is not a number", value));
             }
-        } else if (arg == "--coop-quit-after" || arg == "--coop-silence-after") {
+        } else if (arg == "--coop-quit-after" || arg == "--coop-silence-after" || arg == "--coop-test-drop") {
             const char* value = takeValue();
             if (value != nullptr && ParseInt(value, 1, 24 * 60 * 60, number)) {
-                (arg == "--coop-quit-after" ? options.quitAfterSeconds : options.silenceAfterSeconds) =
-                    static_cast<int>(number);
+                (arg == "--coop-quit-after"      ? options.quitAfterSeconds
+                 : arg == "--coop-silence-after" ? options.silenceAfterSeconds
+                                                 : options.testDropAfterSeconds) = static_cast<int>(number);
             } else if (value != nullptr) {
                 options.warnings.push_back(fmt::format("{}: '{}' is not a number of seconds", arg, value));
             }

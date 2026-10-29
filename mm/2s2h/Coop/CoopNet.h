@@ -27,6 +27,7 @@ enum class SessionState {
     Handshaking,  // Client: connected, waiting for welcome or reject
     Hosting,      // Host: listening and serving clients
     Connected,    // Client: handshake accepted
+    Reconnecting, // Client: the connection was lost; retrying for up to kRejoinWindow with the same player slot
     Rejected,     // Client: host refused the handshake (message holds the reason)
     Disconnected, // Session ended after it was established
     Failed,       // Session could not be started (message holds the reason)
@@ -51,8 +52,13 @@ struct SessionConfig {
     std::string buildVersion;
     int protocolVersion = Protocol::kProtocolVersion; // Only differs when faked for testing
     int silenceAfterSeconds = 0;                      // Test only: stop heartbeats after this many seconds (0 = never)
-    int testNetDelayMs = 0; // Test only: everything sent, and every application message received, waits this long
+    int testNetDelayMs = 0;       // Test only: everything sent, and every application message received, waits this long
+    int testDropAfterSeconds = 0; // Test only (client): close the connection abruptly once, this long after starting
 };
+
+// Milestone 8: a client whose connection drops (not one that leaves) keeps its player slot this long; it reconnects
+// with the token the host gave it in the welcome and gets the same player id back.
+constexpr auto kRejoinWindow = std::chrono::seconds(60);
 
 struct SessionSnapshot {
     Role role = Role::None;
@@ -145,6 +151,15 @@ class CoopNet {
     Clock::time_point mSessionStart;
     bool mSilent = false;
     uint32_t mNextPlayerId = kHostPlayerId + 1;
+    // Host: slots kept for clients whose connection dropped (milestone 8)
+    struct HeldSlot {
+        uint32_t playerId;
+        std::string name;
+        Protocol::Color color;
+        std::string token;
+        Clock::time_point since;
+    };
+    std::vector<HeldSlot> mHeld;
 
     void ThreadMain();
     void RunHost();
