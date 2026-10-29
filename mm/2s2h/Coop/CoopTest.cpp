@@ -605,6 +605,9 @@ void UpdateChanges() {
         SET_WEEKEVENTREG(c.value);
     } else if (c.kind == "switch") {
         Flags_SetSwitch(gPlayState, c.value);
+    } else if (c.kind == "sot") {
+        // As if the Song of Time was just played (z_message.c sets this mode and opens its question).
+        gPlayState->msgCtx.ocarinaMode = OCARINA_MODE_PROCESS_SOT;
     } else if (c.kind == "use") {
         Inventory_ChangeAmmo(static_cast<s16>(c.value), -1);
     } else if (c.kind == "chest" || c.kind == "drop" || c.kind == "pot" || c.kind == "rock") {

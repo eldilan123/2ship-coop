@@ -302,6 +302,8 @@ bool ParseChange(const char* text, LaunchOptions::TimedChange& out) {
         number = flag;
     } else if (kind == "use") {
         ok = ParseInt(value.c_str(), 0, 0xFF, number);
+    } else if (kind == "sot") {
+        ok = ParseInt(value.c_str(), 0, 0, number);
     } else if (kind == "break") {
         ok = ParseInt(value.c_str(), 0, 1, number);
     } else if (kind == "open" || kind == "pick") {
